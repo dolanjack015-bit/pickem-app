@@ -1,5 +1,5 @@
 import { prisma } from "./prisma";
-import { fetchScoreboard, fetchScoreboardByDate, fetchApPoll, SEASON_STRUCTURE, NormalizedGame } from "./espn";
+import { fetchScoreboard, fetchScoreboardByDate, fetchApPoll, SEASON_STRUCTURE, NormalizedGame, cfbWeek0DateBounds } from "./espn";
 import { gradePick } from "./utils";
 
 type Sport = "NFL" | "CFB";
@@ -7,6 +7,13 @@ type Sport = "NFL" | "CFB";
 function isArmyNavy(g: NormalizedGame): boolean {
   const abbrs = [g.homeTeamAbbr, g.awayTeamAbbr].map((a) => a?.toUpperCase());
   return abbrs.includes("ARMY") && abbrs.includes("NAVY");
+}
+
+/** True if a game's kickoff falls on CFB Week 0's anchor date (Aug 29 by default) — used to keep Week 0 games from also showing up under Week 1 or any other week. */
+function isWeek0DatedGame(g: NormalizedGame, season: number): boolean {
+  const { start, end } = cfbWeek0DateBounds(season);
+  const t = new Date(g.startTime).getTime();
+  return t >= start.getTime() && t <= end.getTime();
 }
 
 /**
@@ -108,6 +115,11 @@ export async function syncWeek(
     const homeRank = rankings.get(g.homeTeamAbbr?.toUpperCase()) ?? null;
     const awayRank = rankings.get(g.awayTeamAbbr?.toUpperCase()) ?? null;
     const armyNavy = isArmyNavy(g);
+
+    // Week 0 is synced separately (syncCfbWeek0) and owns its date — if
+    // ESPN's "week 1" grouping happens to include Aug 29 games too, don't
+    // let them also land here.
+    if (sport === "CFB" && weekNumber !== 0 && isWeek0DatedGame(g, season)) continue;
 
     if (filter === "cfb") {
       const keep = seasonType === 3 || armyNavy || homeRank != null || awayRank != null;
@@ -360,6 +372,8 @@ export async function syncWeekByDate(
     const homeRank = rankings.get(g.homeTeamAbbr?.toUpperCase()) ?? null;
     const awayRank = rankings.get(g.awayTeamAbbr?.toUpperCase()) ?? null;
     const armyNavy = isArmyNavy(g);
+
+    if (sport === "CFB" && seasonType !== 1 && weekNumber !== 0 && isWeek0DatedGame(g, season)) continue;
 
     if (filter === "cfb") {
       const keep = seasonType === 1 || seasonType === 3 || armyNavy || homeRank != null || awayRank != null;

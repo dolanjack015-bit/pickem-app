@@ -493,15 +493,30 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
 
       {sport !== "FANTASY" && (
         <button onClick={() => setShowDateFallback((v) => !v)} className="text-xs text-white/40 hover:text-white/70 transition-colors -mt-4 self-start text-left">
-          {showDateFallback ? "Hide" : "Week/season lookup returning the wrong season?"} {!showDateFallback && "Sync by exact date instead →"}
+          {showDateFallback
+            ? "Hide"
+            : sport === "CFB"
+            ? "CFB week numbers from ESPN aren't always reliable — sync by exact date instead →"
+            : "Week/season lookup returning the wrong season? Sync by exact date instead →"}
         </button>
       )}
 
       {showDateFallback && sport !== "FANTASY" && (
         <div className="card p-4 flex flex-wrap gap-3 items-end">
           <p className="text-xs text-white/50 basis-full">
-            Use this if the sync error mentions ESPN returning the wrong season. Pull games for Week {weekNumber} by their
-            actual calendar dates instead of ESPN's week number — they'll still be saved under Season {season}, Week {weekNumber}.
+            {sport === "CFB"
+              ? "ESPN's \"week\" grouping for CFB doesn't always match the actual game dates — it can pull in extra games or miss the exact window. Syncing by exact date is the more reliable option for CFB regular-season weeks: enter the real date range for this week (e.g. the Wednesday/Thursday through Monday it covers), and it'll save under Season " +
+                season +
+                ", Week " +
+                weekNumber +
+                " regardless. Week 0-dated games (Aug 29) are automatically excluded even if ESPN's response includes them."
+              : "Use this if the sync error mentions ESPN returning the wrong season. Pull games for Week " +
+                weekNumber +
+                " by their actual calendar dates instead of ESPN's week number — they'll still be saved under Season " +
+                season +
+                ", Week " +
+                weekNumber +
+                "."}
           </p>
           <label className="flex flex-col text-sm gap-1">
             Start date

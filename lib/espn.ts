@@ -232,7 +232,7 @@ export async function fetchScoreboardByDate(sport: "NFL" | "CFB", dateYYYYMMDD: 
  * that game in range without meaningfully weakening the cutoff for games
  * that are genuinely outside the requested window.
  */
-function parseDateRangeBounds(dateYYYYMMDD: string): { start: Date; end: Date } {
+export function parseDateRangeBounds(dateYYYYMMDD: string): { start: Date; end: Date } {
   const [startStr, endStr] = dateYYYYMMDD.split("-");
   const toDate = (s: string) => {
     const year = Number(s.slice(0, 4));
@@ -276,6 +276,11 @@ export async function fetchApPoll(opts: { week: number; year: number; seasontype
 }
 
 /** Best-effort guess at the current NFL/CFB week number for a given date. */
+/** Week 0's anchor date for a given season — single source of truth, used both to fetch Week 0 and to exclude its games from every other CFB sync. */
+export function cfbWeek0DateBounds(season: number): { start: Date; end: Date } {
+  return parseDateRangeBounds(`${season}0829`);
+}
+
 export function currentSeasonYear(date = new Date()): number {
   // NFL/CFB seasons span Aug (year Y) - Feb (year Y+1); label by the year the
   // season started.
