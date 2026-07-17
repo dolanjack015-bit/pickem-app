@@ -110,6 +110,7 @@ export async function syncWeek(
 
   let gradedCount = 0;
   let savedCount = 0;
+  const keptEventIds = new Set<string>();
 
   for (const g of games) {
     const homeRank = rankings.get(g.homeTeamAbbr?.toUpperCase()) ?? null;
@@ -125,6 +126,8 @@ export async function syncWeek(
       const keep = seasonType === 3 || armyNavy || homeRank != null || awayRank != null;
       if (!keep) continue;
     }
+
+    keptEventIds.add(g.espnEventId);
 
     let gameLabel: string | null = null;
     if (armyNavy) gameLabel = "Army-Navy";
@@ -183,9 +186,17 @@ export async function syncWeek(
     }
   }
 
+  // An owner's sync is authoritative for this week: any game that was
+  // saved here before (e.g. from an earlier ESPN reliability hiccup, like
+  // Week 0's games bleeding into Week 1) but doesn't belong per this
+  // sync's results gets removed now, along with any picks on it.
+  const removed = await prisma.game.deleteMany({
+    where: { weekId: week.id, isManual: false, espnEventId: { notIn: [...keptEventIds] } },
+  });
+
   await refreshWeekLockTime(week.id);
 
-  return { weekId: week.id, gamesFromEspn: games.length, gamesSaved: savedCount, picksGraded: gradedCount };
+  return { weekId: week.id, gamesFromEspn: games.length, gamesSaved: savedCount, gamesRemoved: removed.count, picksGraded: gradedCount };
 }
 
 /**
@@ -367,6 +378,7 @@ export async function syncWeekByDate(
 
   let gradedCount = 0;
   let savedCount = 0;
+  const keptEventIds = new Set<string>();
 
   for (const g of games) {
     const homeRank = rankings.get(g.homeTeamAbbr?.toUpperCase()) ?? null;
@@ -379,6 +391,8 @@ export async function syncWeekByDate(
       const keep = seasonType === 1 || seasonType === 3 || armyNavy || homeRank != null || awayRank != null;
       if (!keep) continue;
     }
+
+    keptEventIds.add(g.espnEventId);
 
     let gameLabel: string | null = null;
     if (armyNavy) gameLabel = "Army-Navy";
@@ -439,9 +453,13 @@ export async function syncWeekByDate(
     }
   }
 
+  const removed = await prisma.game.deleteMany({
+    where: { weekId: week.id, isManual: false, espnEventId: { notIn: [...keptEventIds] } },
+  });
+
   await refreshWeekLockTime(week.id);
 
-  return { weekId: week.id, gamesFromEspn: games.length, gamesSaved: savedCount, picksGraded: gradedCount };
+  return { weekId: week.id, gamesFromEspn: games.length, gamesSaved: savedCount, gamesRemoved: removed.count, picksGraded: gradedCount };
 }
 
 /**
@@ -563,6 +581,7 @@ export async function syncFullSeason(leagueId: string, sport: Sport, season: num
   return {
     weeksSynced: results.reduce((sum, r: any) => sum + (r.weeksSynced ?? 1), 0),
     gamesSaved: results.reduce((sum, r) => sum + r.gamesSaved, 0),
+    gamesRemoved: results.reduce((sum, r: any) => sum + (r.gamesRemoved ?? 0), 0),
     picksGraded: results.reduce((sum, r) => sum + r.picksGraded, 0),
     weeksFailed: errors.length,
     errors: errors.length > 0 ? errors : undefined,

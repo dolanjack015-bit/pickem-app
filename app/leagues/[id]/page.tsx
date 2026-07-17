@@ -230,7 +230,7 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
     });
     const data = await safeJson(res);
     if (res.ok) {
-      setMessage(`Synced ${data.gamesSaved} of ${data.gamesFromEspn} games, graded ${data.picksGraded} picks.`);
+      setMessage(`Synced ${data.gamesSaved} of ${data.gamesFromEspn} games, graded ${data.picksGraded} picks.${data.gamesRemoved ? ` Removed ${data.gamesRemoved} game(s) that no longer belong in this week.` : ""}`);
       await loadWeek();
       await loadLeaderboard();
       await loadWeeklyLeaderboard();
@@ -253,7 +253,7 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
     });
     const data = await safeJson(res);
     if (res.ok) {
-      setMessage(`Synced ${data.gamesSaved} of ${data.gamesFromEspn} games (by date), graded ${data.picksGraded} picks.`);
+      setMessage(`Synced ${data.gamesSaved} of ${data.gamesFromEspn} games (by date), graded ${data.picksGraded} picks.${data.gamesRemoved ? ` Removed ${data.gamesRemoved} game(s) that no longer belong in this week.` : ""}`);
       await loadWeek();
       await loadLeaderboard();
       await loadWeeklyLeaderboard();
