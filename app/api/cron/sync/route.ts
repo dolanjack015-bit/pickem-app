@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { refreshAllActiveWeeks } from "@/lib/sync";
 
+export const maxDuration = 60;
+
 /**
  * GET /api/cron/sync?secret=CRON_SECRET
  *

@@ -4,22 +4,28 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { gradeManualGame } from "@/lib/sync";
 
-async function requireMembership(leagueId: string, userId: string) {
-  return prisma.leagueMember.findUnique({ where: { userId_leagueId: { userId, leagueId } } });
+async function requireOwner(leagueId: string, userId: string) {
+  const membership = await prisma.leagueMember.findUnique({ where: { userId_leagueId: { userId, leagueId } } });
+  if (!membership) return { error: NextResponse.json({ error: "Not a member of this league" }, { status: 403 }) };
+  if (membership.role !== "owner") {
+    return { error: NextResponse.json({ error: "Only the league owner can manage fantasy matchups" }, { status: 403 }) };
+  }
+  return { membership };
 }
 
 /**
  * PATCH /api/leagues/:id/fantasy/:gameId
  * body: { homeScore, awayScore }
  * Sets the final score on a manual game and grades every pick tied to it.
+ * Owner-only.
  */
 export async function PATCH(req: Request, { params }: { params: { id: string; gameId: string } }) {
   const session = await getServerSession(authOptions);
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const userId = (session.user as any).id as string;
 
-  const membership = await requireMembership(params.id, userId);
-  if (!membership) return NextResponse.json({ error: "Not a member of this league" }, { status: 403 });
+  const { error } = await requireOwner(params.id, userId);
+  if (error) return error;
 
   const game = await prisma.game.findUnique({ where: { id: params.gameId }, include: { week: true } });
   if (!game || game.week.leagueId !== params.id || !game.isManual) {
@@ -35,14 +41,14 @@ export async function PATCH(req: Request, { params }: { params: { id: string; ga
   return NextResponse.json(result);
 }
 
-/** DELETE /api/leagues/:id/fantasy/:gameId — remove a manual matchup (and its picks). */
+/** DELETE /api/leagues/:id/fantasy/:gameId — remove a manual matchup (and its picks). Owner-only. */
 export async function DELETE(_req: Request, { params }: { params: { id: string; gameId: string } }) {
   const session = await getServerSession(authOptions);
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const userId = (session.user as any).id as string;
 
-  const membership = await requireMembership(params.id, userId);
-  if (!membership) return NextResponse.json({ error: "Not a member of this league" }, { status: 403 });
+  const { error } = await requireOwner(params.id, userId);
+  if (error) return error;
 
   const game = await prisma.game.findUnique({ where: { id: params.gameId }, include: { week: true } });
   if (!game || game.week.leagueId !== params.id || !game.isManual) {

@@ -9,8 +9,8 @@ import crypto from "crypto";
  * body: { season, weekNumber, homeTeam, awayTeam, startTime? }
  *
  * Creates (or gets-or-creates the Week for) a hand-entered fantasy
- * matchup. Any league member can add one — useful when different people
- * manage different fantasy leagues within the same pick'em group.
+ * matchup. Owner-only, same as ESPN-sourced syncing — the owner sets
+ * what's up for picks each week.
  */
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   const session = await getServerSession(authOptions);
@@ -21,6 +21,9 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     where: { userId_leagueId: { userId, leagueId: params.id } },
   });
   if (!membership) return NextResponse.json({ error: "Not a member of this league" }, { status: 403 });
+  if (membership.role !== "owner") {
+    return NextResponse.json({ error: "Only the league owner can add fantasy matchups" }, { status: 403 });
+  }
 
   const { season, weekNumber, homeTeam, awayTeam, startTime } = await req.json();
   if (!season || weekNumber === undefined || !homeTeam || !awayTeam) {

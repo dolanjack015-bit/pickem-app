@@ -4,6 +4,13 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { syncWeek, syncFullSeason, syncCfbWeek0, syncCfbPostseason, syncWeekByDate } from "@/lib/sync";
 
+// CFB syncs do meaningfully more work than NFL ones (an extra AP-poll
+// fetch, plus per-game DB writes), and were likely hitting Vercel's
+// default ~10s serverless timeout — which fails silently from the
+// client's point of view (the connection just drops, no JSON error body).
+// Full-season syncs in particular need real headroom.
+export const maxDuration = 60;
+
 /**
  * POST /api/leagues/:id/sync
  *

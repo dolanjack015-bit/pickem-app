@@ -223,69 +223,84 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
   async function handleSync() {
     setSyncing(true);
     setMessage(null);
-    const res = await fetch(`/api/leagues/${params.id}/sync`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sport, season, weekNumber, seasonType, allGames: cfbAllGames }),
-    });
-    const data = await safeJson(res);
-    if (res.ok) {
-      setMessage(`Synced ${data.gamesSaved} of ${data.gamesFromEspn} games, graded ${data.picksGraded} picks.${data.gamesRemoved ? ` Removed ${data.gamesRemoved} game(s) that no longer belong in this week.` : ""}`);
-      await loadWeek();
-      await loadLeaderboard();
-      await loadWeeklyLeaderboard();
-    } else {
-      setMessage(data.error || "Sync failed");
-      if (data.error?.includes("Sync by date range")) setShowDateFallback(true);
+    try {
+      const res = await fetch(`/api/leagues/${params.id}/sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sport, season, weekNumber, seasonType, allGames: cfbAllGames }),
+      });
+      const data = await safeJson(res);
+      if (res.ok) {
+        setMessage(`Synced ${data.gamesSaved} of ${data.gamesFromEspn} games, graded ${data.picksGraded} picks.${data.gamesRemoved ? ` Removed ${data.gamesRemoved} game(s) that no longer belong in this week.` : ""}`);
+        await loadWeek();
+        await loadLeaderboard();
+        await loadWeeklyLeaderboard();
+      } else {
+        setMessage(data.error || "Sync failed");
+        if (data.error?.includes("Sync by date range")) setShowDateFallback(true);
+      }
+    } catch (err: any) {
+      setMessage(`Request failed: ${err?.message ?? "unknown network error"}. It may have timed out — try again.`);
+    } finally {
+      setSyncing(false);
     }
-    setSyncing(false);
   }
 
   async function handleSyncByDate() {
     if (!dateStart) return;
     setSyncing(true);
     setMessage(null);
-    const dateRange = dateEnd ? `${dateStart.replace(/-/g, "")}-${dateEnd.replace(/-/g, "")}` : dateStart.replace(/-/g, "");
-    const res = await fetch(`/api/leagues/${params.id}/sync`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sport, season, weekNumber, seasonType, dateRange, allGames: cfbAllGames }),
-    });
-    const data = await safeJson(res);
-    if (res.ok) {
-      setMessage(`Synced ${data.gamesSaved} of ${data.gamesFromEspn} games (by date), graded ${data.picksGraded} picks.${data.gamesRemoved ? ` Removed ${data.gamesRemoved} game(s) that no longer belong in this week.` : ""}`);
-      await loadWeek();
-      await loadLeaderboard();
-      await loadWeeklyLeaderboard();
-    } else {
-      setMessage(data.error || "Sync by date failed");
+    try {
+      const dateRange = dateEnd ? `${dateStart.replace(/-/g, "")}-${dateEnd.replace(/-/g, "")}` : dateStart.replace(/-/g, "");
+      const res = await fetch(`/api/leagues/${params.id}/sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sport, season, weekNumber, seasonType, dateRange, allGames: cfbAllGames }),
+      });
+      const data = await safeJson(res);
+      if (res.ok) {
+        setMessage(`Synced ${data.gamesSaved} of ${data.gamesFromEspn} games (by date), graded ${data.picksGraded} picks.${data.gamesRemoved ? ` Removed ${data.gamesRemoved} game(s) that no longer belong in this week.` : ""}`);
+        await loadWeek();
+        await loadLeaderboard();
+        await loadWeeklyLeaderboard();
+      } else {
+        setMessage(data.error || "Sync by date failed");
+      }
+    } catch (err: any) {
+      setMessage(`Request failed: ${err?.message ?? "unknown network error"}. It may have timed out — try a narrower date range or try again.`);
+    } finally {
+      setSyncing(false);
     }
-    setSyncing(false);
   }
 
   async function handleSyncFullSeason() {
     if (!confirm(`This pulls the ENTIRE ${sport} ${season} season from ESPN — dozens of requests, may take a while. Continue?`)) return;
     setSyncing(true);
     setMessage("Syncing full season, this can take a minute or two...");
-    const res = await fetch(`/api/leagues/${params.id}/sync`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sport, season, full: true, allGames: cfbAllGames }),
-    });
-    const data = await safeJson(res);
-    if (res.ok) {
-      const failedNote =
-        data.weeksFailed > 0
-          ? ` ${data.weeksFailed} week${data.weeksFailed === 1 ? "" : "s"} couldn't be synced by week number (ESPN reliability issue) — sync ${data.weeksFailed === 1 ? "it" : "those"} individually using "Sync by exact date": weeks ${data.errors?.map((e: any) => e.weekNumber).join(", ")}.`
-          : "";
-      setMessage(`Synced ${data.weeksSynced} weeks, ${data.gamesSaved} games, graded ${data.picksGraded} picks.${failedNote}`);
-      await loadWeek();
-      await loadLeaderboard();
-      await loadWeeklyLeaderboard();
-    } else {
-      setMessage(data.error || "Full season sync failed");
+    try {
+      const res = await fetch(`/api/leagues/${params.id}/sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sport, season, full: true, allGames: cfbAllGames }),
+      });
+      const data = await safeJson(res);
+      if (res.ok) {
+        const failedNote =
+          data.weeksFailed > 0
+            ? ` ${data.weeksFailed} week${data.weeksFailed === 1 ? "" : "s"} couldn't be synced by week number (ESPN reliability issue) — sync ${data.weeksFailed === 1 ? "it" : "those"} individually using "Sync by exact date": weeks ${data.errors?.map((e: any) => e.weekNumber).join(", ")}.`
+            : "";
+        setMessage(`Synced ${data.weeksSynced} weeks, ${data.gamesSaved} games, graded ${data.picksGraded} picks.${failedNote}`);
+        await loadWeek();
+        await loadLeaderboard();
+        await loadWeeklyLeaderboard();
+      } else {
+        setMessage(data.error || "Full season sync failed");
+      }
+    } catch (err: any) {
+      setMessage(`Request failed: ${err?.message ?? "unknown network error"}. Full-season syncs can take a while and may time out — try again.`);
+    } finally {
+      setSyncing(false);
     }
-    setSyncing(false);
   }
 
   async function handleRemoveMember(userId: string, isSelf: boolean) {
@@ -521,7 +536,7 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
         </p>
       )}
 
-      {sport === "FANTASY" && (
+      {sport === "FANTASY" && league?.role === "owner" && (
         <form onSubmit={handleAddFantasyGame} className="card p-4 flex flex-wrap gap-3 items-end">
           <label className="flex flex-col text-sm gap-1 flex-1 min-w-[160px]">
             Team A (away)
@@ -612,7 +627,11 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
         ) : games.length === 0 ? (
           <p className="text-white/60">
             {sport === "FANTASY" ? (
-              "No matchups added for this week yet. Use the form above to add one."
+              league?.role === "owner" ? (
+                "No matchups added for this week yet. Use the form above to add one."
+              ) : (
+                "The league owner hasn't added this week's fantasy matchups yet — check back soon."
+              )
             ) : league?.role === "owner" ? (
               <>
                 No games loaded for this slate yet. Click <strong>Sync this week</strong> (or <strong>Sync full season</strong>) to pull it from ESPN.
@@ -921,7 +940,7 @@ function GameCard({
           onClick={() => onPick(game.id, "home")}
         />
       </div>
-      {game.isManual && (
+      {game.isManual && isOwner && (
         <div className="flex items-end gap-2 border-t border-white/10 pt-3 text-xs">
           <label className="flex flex-col gap-1">
             Away score
