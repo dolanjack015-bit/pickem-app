@@ -351,7 +351,11 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
   async function handleDeleteFantasyGame(gameId: string) {
     if (!confirm("Remove this matchup and everyone's picks for it?")) return;
     const res = await fetch(`/api/leagues/${params.id}/fantasy/${gameId}`, { method: "DELETE" });
-    if (res.ok) await loadWeek();
+    if (res.ok) {
+      await loadWeek();
+      await loadLeaderboard();
+      await loadWeeklyLeaderboard();
+    }
   }
 
   async function handlePick(gameId: string, pickedTeam: "home" | "away") {
