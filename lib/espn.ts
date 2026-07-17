@@ -109,6 +109,20 @@ export async function fetchScoreboard(
           `it likely hasn't activated week-based indexing for that season yet. Try "Sync by date range" instead.`
       );
     }
+
+    // A single week's games should span roughly a week, not a month+.
+    // ESPN's week param has been observed (for CFB especially) to
+    // sometimes ignore the requested week and return a much broader
+    // slice of the season instead. Catch that here rather than silently
+    // saving every one of those games under one Week record.
+    const eventDates = events.map((e: any) => new Date(e.date).getTime());
+    const spreadDays = (Math.max(...eventDates) - Math.min(...eventDates)) / (1000 * 60 * 60 * 24);
+    if (spreadDays > 9) {
+      throw new Error(
+        `ESPN returned games spanning ${Math.round(spreadDays)} days for week ${opts.week} — far more than a single week. ` +
+          `This is a known ESPN reliability issue for ${sport === "CFB" ? "CFB" : "this"} week lookups; use "Sync by date range" instead.`
+      );
+    }
   }
 
   const games: NormalizedGame[] = events.map((event: any) => {

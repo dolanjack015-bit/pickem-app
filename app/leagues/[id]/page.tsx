@@ -274,7 +274,11 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
     });
     const data = await safeJson(res);
     if (res.ok) {
-      setMessage(`Synced ${data.weeksSynced} weeks, ${data.gamesSaved} games, graded ${data.picksGraded} picks.`);
+      const failedNote =
+        data.weeksFailed > 0
+          ? ` ${data.weeksFailed} week${data.weeksFailed === 1 ? "" : "s"} couldn't be synced by week number (ESPN reliability issue) — sync ${data.weeksFailed === 1 ? "it" : "those"} individually using "Sync by exact date": weeks ${data.errors?.map((e: any) => e.weekNumber).join(", ")}.`
+          : "";
+      setMessage(`Synced ${data.weeksSynced} weeks, ${data.gamesSaved} games, graded ${data.picksGraded} picks.${failedNote}`);
       await loadWeek();
       await loadLeaderboard();
       await loadWeeklyLeaderboard();

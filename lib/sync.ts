@@ -532,19 +532,30 @@ export async function syncCfbWeek0(leagueId: string, season: number, dateOverrid
  * free-tier-friendly rollout.
  */
 export async function syncFullSeason(leagueId: string, sport: Sport, season: number, cfbAllGames: boolean = false) {
-  const results = [];
+  const results: { gamesSaved: number; picksGraded: number; weeksSynced?: number }[] = [];
+  const errors: { weekNumber: number; error: string }[] = [];
+
+  const safeSyncWeek = async (weekNumber: number, seasonType: number, filter: "all" | "cfb") => {
+    try {
+      results.push(await syncWeek(leagueId, sport, season, weekNumber, seasonType, filter));
+    } catch (err: any) {
+      // One unreliable week (a known ESPN issue for some CFB weeks) shouldn't
+      // abort the whole run — record it and keep going with the rest.
+      errors.push({ weekNumber, error: err?.message ?? "Unknown error" });
+    }
+  };
 
   if (sport === "NFL") {
     for (const w of SEASON_STRUCTURE.NFL.regularWeeks) {
-      results.push(await syncWeek(leagueId, "NFL", season, w, 2, "all"));
+      await safeSyncWeek(w, 2, "all");
     }
     for (const w of SEASON_STRUCTURE.NFL.postseasonWeeks) {
-      results.push(await syncWeek(leagueId, "NFL", season, w, 3, "all"));
+      await safeSyncWeek(w, 3, "all");
     }
   } else {
     results.push(await syncCfbWeek0(leagueId, season));
     for (const w of SEASON_STRUCTURE.CFB.regularWeeks) {
-      results.push(await syncWeek(leagueId, "CFB", season, w, 2, cfbAllGames ? "all" : "cfb"));
+      await safeSyncWeek(w, 2, cfbAllGames ? "all" : "cfb");
     }
     results.push(await syncCfbPostseason(leagueId, season));
   }
@@ -553,6 +564,8 @@ export async function syncFullSeason(leagueId: string, sport: Sport, season: num
     weeksSynced: results.reduce((sum, r: any) => sum + (r.weeksSynced ?? 1), 0),
     gamesSaved: results.reduce((sum, r) => sum + r.gamesSaved, 0),
     picksGraded: results.reduce((sum, r) => sum + r.picksGraded, 0),
+    weeksFailed: errors.length,
+    errors: errors.length > 0 ? errors : undefined,
   };
 }
 
