@@ -358,6 +358,19 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
     }
   }
 
+  async function handleRemoveGame(gameId: string) {
+    if (!confirm("Remove this game from the board and everyone's picks on it? This can't be undone.")) return;
+    const res = await fetch(`/api/leagues/${params.id}/games/${gameId}`, { method: "DELETE" });
+    if (res.ok) {
+      await loadWeek();
+      await loadLeaderboard();
+      await loadWeeklyLeaderboard();
+    } else {
+      const data = await safeJson(res);
+      setMessage(data.error || "Failed to remove game");
+    }
+  }
+
   async function handlePick(gameId: string, pickedTeam: "home" | "away") {
     const res = await fetch("/api/picks", {
       method: "POST",
@@ -611,7 +624,16 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
         ) : (
           <div className="grid sm:grid-cols-2 gap-4">
             {games.map((g) => (
-              <GameCard key={g.id} game={g} sport={sport} onPick={handlePick} onSetScore={handleSetFantasyScore} onDelete={handleDeleteFantasyGame} />
+              <GameCard
+                key={g.id}
+                game={g}
+                sport={sport}
+                isOwner={league?.role === "owner"}
+                onPick={handlePick}
+                onSetScore={handleSetFantasyScore}
+                onDelete={handleDeleteFantasyGame}
+                onRemoveGame={handleRemoveGame}
+              />
             ))}
           </div>
         )}
@@ -833,15 +855,19 @@ function WeeklyLeaderboardTable({ rows }: { rows: LeaderboardRow[] }) {
 function GameCard({
   game,
   sport,
+  isOwner,
   onPick,
   onSetScore,
   onDelete,
+  onRemoveGame,
 }: {
   game: Game;
   sport: string;
+  isOwner: boolean;
   onPick: (gameId: string, team: "home" | "away") => void;
   onSetScore: (gameId: string, homeScore: number, awayScore: number) => void;
   onDelete: (gameId: string) => void;
+  onRemoveGame: (gameId: string) => void;
 }) {
   const locked = game.locked;
   const [homeInput, setHomeInput] = useState(game.homeScore?.toString() ?? "");
@@ -851,7 +877,18 @@ function GameCard({
     <div className="card p-4 flex flex-col gap-3">
       <div className="flex justify-between text-xs text-white/50">
         <span>{new Date(game.startTime).toLocaleString()}</span>
-        <span className="uppercase">{game.status.replace("_", " ")}</span>
+        <span className="flex items-center gap-2">
+          <span className="uppercase">{game.status.replace("_", " ")}</span>
+          {isOwner && !game.isManual && (
+            <button
+              onClick={() => onRemoveGame(game.id)}
+              className="text-white/30 hover:text-red-400 transition-colors"
+              title="Remove this game from the board (owner only)"
+            >
+              ✕
+            </button>
+          )}
+        </span>
       </div>
       {game.gameLabel && (
         <span className="self-start text-[10px] uppercase tracking-wide bg-pigskin/20 text-pigskin px-2 py-0.5 rounded">
