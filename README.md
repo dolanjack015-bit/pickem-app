@@ -139,14 +139,18 @@ season starting around September).
    `NEXTAUTH_URL` (your deployed URL), and `CRON_SECRET` (any random string).
 5. After the first deploy, run migrations against the production database
    once: `npx prisma migrate deploy` (with `DATABASE_URL` pointed at Neon).
-6. Update the `secret=` query param in `vercel.json` to match your
-   `CRON_SECRET`, commit, and redeploy — this lets Vercel Cron auto-refresh
-   scores on a schedule so nobody has to click "Sync" manually.
-   - Note: Vercel's free (Hobby) plan currently limits cron jobs to roughly
-     once a day; the "every 5 minutes" schedule in `vercel.json` requires a
-     paid plan. On the free plan, either sync manually via the UI button on
-     game days, or point the cron at a free external scheduler (e.g.
-     cron-job.org) hitting `https://your-app/api/cron/sync?secret=...`.
+6. Set up automatic score refreshing. **`vercel.json` intentionally has no
+   cron config in it** — Vercel's Hobby plan only allows cron jobs to run
+   once a day, which is too infrequent to be useful here, and doesn't
+   support the every-few-minutes schedule this app wants. Instead, use a
+   free external scheduler like [cron-job.org](https://cron-job.org):
+   create an account, add a job pointed at
+   `https://your-app.vercel.app/api/cron/sync?secret=YOUR_CRON_SECRET`
+   (matching the `CRON_SECRET` env var from step 4), and set it to run
+   every 5–15 minutes. Test the URL once in a browser first — it should
+   return JSON, not an error page — before relying on the schedule.
+   Without this set up, scores only update when someone manually clicks
+   "Refresh scores" in the app.
 
 ## Fantasy football (manual entry)
 Fantasy leagues aren't a single standardized data source the way NFL/CFB
