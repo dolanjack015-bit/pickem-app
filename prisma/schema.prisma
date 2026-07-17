@@ -1,0 +1,104 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String         @id @default(cuid())
+  email        String         @unique
+  username     String         @unique
+  passwordHash String
+  createdAt    DateTime       @default(now())
+  memberships  LeagueMember[]
+  picks        Pick[]
+}
+
+model League {
+  id         String         @id @default(cuid())
+  name       String
+  inviteCode String         @unique
+  sport      String // "NFL" | "CFB" | "BOTH"
+  ownerId    String
+  createdAt  DateTime       @default(now())
+  members    LeagueMember[]
+  weeks      Week[]
+}
+
+model LeagueMember {
+  id       String   @id @default(cuid())
+  userId   String
+  leagueId String
+  role     String   @default("member") // "owner" | "member"
+  joinedAt DateTime @default(now())
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  league   League   @relation(fields: [leagueId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, leagueId])
+}
+
+// seasonType: 1 = preseason/week-0, 2 = regular season, 3 = postseason
+// (playoffs + Super Bowl for NFL; conference championships + bowls for CFB)
+model Week {
+  id           String   @id @default(cuid())
+  leagueId     String
+  season       Int
+  weekNumber   Int
+  seasonType   Int      @default(2)
+  sport        String // "NFL" | "CFB" | "FANTASY"
+  locked       Boolean  @default(false)
+  picksLockAt  DateTime? // NFL/CFB: earliest kickoff in the week (e.g. Thursday Night Football). Recomputed on every sync.
+  league       League   @relation(fields: [leagueId], references: [id], onDelete: Cascade)
+  games        Game[]
+
+  @@unique([leagueId, season, weekNumber, seasonType, sport])
+}
+
+model Game {
+  id           String   @id @default(cuid())
+  weekId       String
+  espnEventId  String
+  homeTeam     String
+  awayTeam     String
+  homeTeamAbbr String
+  awayTeamAbbr String
+  startTime    DateTime
+  status       String   @default("scheduled") // scheduled | in_progress | final
+  homeScore    Int?
+  awayScore    Int?
+  winner       String? // "home" | "away" | "tie"
+
+  // Display metadata — populated on sync, all optional since coverage
+  // varies by team/sport/era.
+  homeLogo           String?
+  awayLogo           String?
+  homeLogoThrowback   String? // best-effort; ESPN doesn't label every team's alt logo consistently
+  awayLogoThrowback   String?
+  homeRecord          String? // e.g. "8-2"
+  awayRecord          String?
+  homeRank            Int? // AP Top 25 rank, CFB only
+  awayRank            Int?
+  gameLabel           String? // e.g. "Bowl: Rose Bowl", "Army-Navy", "Conference Championship", "Week 0"
+  isManual            Boolean  @default(false) // true for hand-entered games (e.g. fantasy matchups) not synced from ESPN
+
+  week  Week   @relation(fields: [weekId], references: [id], onDelete: Cascade)
+  picks Pick[]
+
+  @@unique([weekId, espnEventId])
+}
+
+model Pick {
+  id         String   @id @default(cuid())
+  userId     String
+  gameId     String
+  pickedTeam String // "home" | "away"
+  isCorrect  Boolean?
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  game       Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, gameId])
+}
