@@ -16,7 +16,7 @@ export async function GET(req: Request) {
   }
 
   const activeWeeks = await prisma.week.findMany({
-    where: { games: { some: { status: { not: "final" } } } },
+    where: { sport: { in: ["NFL", "CFB"] }, games: { some: { status: { not: "final" } } } },
   });
 
   const results = [];
@@ -29,7 +29,7 @@ export async function GET(req: Request) {
         week.weekNumber,
         week.seasonType
       );
-      results.push({ weekId: week.id, ...result });
+      results.push({ ...result, weekId: week.id });
     } catch (err: any) {
       results.push({ weekId: week.id, error: err.message });
     }
