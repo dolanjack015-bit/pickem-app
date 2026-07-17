@@ -1,1 +1,8 @@
-{}
+{
+  "crons": [
+    {
+      "path": "/api/cron/sync?secret=REPLACE_WITH_YOUR_CRON_SECRET",
+      "schedule": "*/5 * * * *"
+    }
+  ]
+}

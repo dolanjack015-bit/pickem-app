@@ -20,7 +20,13 @@ export default function RegisterPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),
       });
-      const data = await res.json();
+      const text = await res.text();
+      let data: any;
+      try {
+        data = text ? JSON.parse(text) : { error: `Server returned an empty response (status ${res.status})` };
+      } catch {
+        data = { error: `Server returned an unexpected response (status ${res.status})` };
+      }
       if (!res.ok) throw new Error(data.error || "Registration failed");
 
       const signInRes = await signIn("credentials", {
