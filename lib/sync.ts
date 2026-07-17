@@ -108,10 +108,7 @@ export async function syncWeek(
     create: { leagueId, season, weekNumber, seasonType, sport },
   });
 
-  let gradedCount = 0;
-  let savedCount = 0;
-  const keptEventIds = new Set<string>();
-
+  const toSave: { g: NormalizedGame; homeRank: number | null; awayRank: number | null; gameLabel: string | null }[] = [];
   for (const g of games) {
     const homeRank = rankings.get(g.homeTeamAbbr?.toUpperCase()) ?? null;
     const awayRank = rankings.get(g.awayTeamAbbr?.toUpperCase()) ?? null;
@@ -121,69 +118,75 @@ export async function syncWeek(
     // ESPN's "week 1" grouping happens to include Aug 29 games too, don't
     // let them also land here.
     if (sport === "CFB" && weekNumber !== 0 && isWeek0DatedGame(g, season)) continue;
-
     if (filter === "cfb") {
       const keep = seasonType === 3 || armyNavy || homeRank != null || awayRank != null;
       if (!keep) continue;
     }
 
-    keptEventIds.add(g.espnEventId);
-
     let gameLabel: string | null = null;
     if (armyNavy) gameLabel = "Army-Navy";
 
-    const game = await prisma.game.upsert({
-      where: { weekId_espnEventId: { weekId: week.id, espnEventId: g.espnEventId } },
-      update: {
-        status: g.status,
-        homeScore: g.homeScore,
-        awayScore: g.awayScore,
-        winner: g.winner,
-        homeLogo: g.homeLogo,
-        awayLogo: g.awayLogo,
-        homeLogoThrowback: g.homeLogoThrowback,
-        awayLogoThrowback: g.awayLogoThrowback,
-        homeRecord: g.homeRecord,
-        awayRecord: g.awayRecord,
-        homeRank,
-        awayRank,
-        gameLabel,
-      },
-      create: {
-        weekId: week.id,
-        espnEventId: g.espnEventId,
-        homeTeam: g.homeTeam,
-        awayTeam: g.awayTeam,
-        homeTeamAbbr: g.homeTeamAbbr,
-        awayTeamAbbr: g.awayTeamAbbr,
-        startTime: new Date(g.startTime),
-        status: g.status,
-        homeScore: g.homeScore,
-        awayScore: g.awayScore,
-        winner: g.winner,
-        homeLogo: g.homeLogo,
-        awayLogo: g.awayLogo,
-        homeLogoThrowback: g.homeLogoThrowback,
-        awayLogoThrowback: g.awayLogoThrowback,
-        homeRecord: g.homeRecord,
-        awayRecord: g.awayRecord,
-        homeRank,
-        awayRank,
-        gameLabel,
-      },
-    });
-    savedCount++;
+    toSave.push({ g, homeRank, awayRank, gameLabel });
+  }
 
-    if (game.status === "final" && game.winner) {
-      const picks = await prisma.pick.findMany({ where: { gameId: game.id } });
-      for (const pick of picks) {
-        const isCorrect = gradePick(pick.pickedTeam as "home" | "away", game.winner as any);
-        if (pick.isCorrect !== isCorrect) {
-          await prisma.pick.update({ where: { id: pick.id }, data: { isCorrect } });
-          gradedCount++;
-        }
-      }
-    }
+  const keptEventIds = new Set(toSave.map((x) => x.g.espnEventId));
+
+  const savedGames = await Promise.all(
+    toSave.map(({ g, homeRank, awayRank, gameLabel }) =>
+      prisma.game.upsert({
+        where: { weekId_espnEventId: { weekId: week.id, espnEventId: g.espnEventId } },
+        update: {
+          status: g.status,
+          homeScore: g.homeScore,
+          awayScore: g.awayScore,
+          winner: g.winner,
+          homeLogo: g.homeLogo,
+          awayLogo: g.awayLogo,
+          homeLogoThrowback: g.homeLogoThrowback,
+          awayLogoThrowback: g.awayLogoThrowback,
+          homeRecord: g.homeRecord,
+          awayRecord: g.awayRecord,
+          homeRank,
+          awayRank,
+          gameLabel,
+        },
+        create: {
+          weekId: week.id,
+          espnEventId: g.espnEventId,
+          homeTeam: g.homeTeam,
+          awayTeam: g.awayTeam,
+          homeTeamAbbr: g.homeTeamAbbr,
+          awayTeamAbbr: g.awayTeamAbbr,
+          startTime: new Date(g.startTime),
+          status: g.status,
+          homeScore: g.homeScore,
+          awayScore: g.awayScore,
+          winner: g.winner,
+          homeLogo: g.homeLogo,
+          awayLogo: g.awayLogo,
+          homeLogoThrowback: g.homeLogoThrowback,
+          awayLogoThrowback: g.awayLogoThrowback,
+          homeRecord: g.homeRecord,
+          awayRecord: g.awayRecord,
+          homeRank,
+          awayRank,
+          gameLabel,
+        },
+      })
+    )
+  );
+  const savedCount = savedGames.length;
+
+  const finalGames = savedGames.filter((game) => game.status === "final" && game.winner);
+  let gradedCount = 0;
+  if (finalGames.length > 0) {
+    const winnerByGameId = new Map(finalGames.map((g) => [g.id, g.winner as "home" | "away" | "tie"]));
+    const picks = await prisma.pick.findMany({ where: { gameId: { in: finalGames.map((g) => g.id) } } });
+    const toUpdate = picks
+      .map((pick) => ({ pick, isCorrect: gradePick(pick.pickedTeam as "home" | "away", winnerByGameId.get(pick.gameId)!) }))
+      .filter(({ pick, isCorrect }) => pick.isCorrect !== isCorrect);
+    await Promise.all(toUpdate.map(({ pick, isCorrect }) => prisma.pick.update({ where: { id: pick.id }, data: { isCorrect } })));
+    gradedCount = toUpdate.length;
   }
 
   // An owner's sync is authoritative for this week: any game that was
@@ -376,81 +379,92 @@ export async function syncWeekByDate(
     create: { leagueId, season, weekNumber, seasonType, sport },
   });
 
-  let gradedCount = 0;
-  let savedCount = 0;
-  const keptEventIds = new Set<string>();
-
+  // Filtering is pure/synchronous — figure out which games we're keeping
+  // before touching the database at all.
+  const toSave: { g: NormalizedGame; homeRank: number | null; awayRank: number | null; gameLabel: string | null }[] = [];
   for (const g of games) {
     const homeRank = rankings.get(g.homeTeamAbbr?.toUpperCase()) ?? null;
     const awayRank = rankings.get(g.awayTeamAbbr?.toUpperCase()) ?? null;
     const armyNavy = isArmyNavy(g);
 
     if (sport === "CFB" && seasonType !== 1 && weekNumber !== 0 && isWeek0DatedGame(g, season)) continue;
-
     if (filter === "cfb") {
       const keep = seasonType === 1 || seasonType === 3 || armyNavy || homeRank != null || awayRank != null;
       if (!keep) continue;
     }
-
-    keptEventIds.add(g.espnEventId);
 
     let gameLabel: string | null = null;
     if (armyNavy) gameLabel = "Army-Navy";
     else if (seasonType === 1) gameLabel = "Week 0";
     else if (seasonType === 3 && sport === "CFB") gameLabel = categorizeCfbPostseasonGame(g).gameLabel;
 
-    const game = await prisma.game.upsert({
-      where: { weekId_espnEventId: { weekId: week.id, espnEventId: g.espnEventId } },
-      update: {
-        status: g.status,
-        homeScore: g.homeScore,
-        awayScore: g.awayScore,
-        winner: g.winner,
-        homeLogo: g.homeLogo,
-        awayLogo: g.awayLogo,
-        homeLogoThrowback: g.homeLogoThrowback,
-        awayLogoThrowback: g.awayLogoThrowback,
-        homeRecord: g.homeRecord,
-        awayRecord: g.awayRecord,
-        homeRank,
-        awayRank,
-        gameLabel,
-      },
-      create: {
-        weekId: week.id,
-        espnEventId: g.espnEventId,
-        homeTeam: g.homeTeam,
-        awayTeam: g.awayTeam,
-        homeTeamAbbr: g.homeTeamAbbr,
-        awayTeamAbbr: g.awayTeamAbbr,
-        startTime: new Date(g.startTime),
-        status: g.status,
-        homeScore: g.homeScore,
-        awayScore: g.awayScore,
-        winner: g.winner,
-        homeLogo: g.homeLogo,
-        awayLogo: g.awayLogo,
-        homeLogoThrowback: g.homeLogoThrowback,
-        awayLogoThrowback: g.awayLogoThrowback,
-        homeRecord: g.homeRecord,
-        awayRecord: g.awayRecord,
-        homeRank,
-        awayRank,
-        gameLabel,
-      },
-    });
-    savedCount++;
+    toSave.push({ g, homeRank, awayRank, gameLabel });
+  }
 
-    if (game.status === "final" && game.winner) {
-      const picks = await prisma.pick.findMany({ where: { gameId: game.id } });
-      for (const pick of picks) {
-        const isCorrect = gradePick(pick.pickedTeam as "home" | "away", game.winner as any);
-        if (pick.isCorrect !== isCorrect) {
-          await prisma.pick.update({ where: { id: pick.id }, data: { isCorrect } });
-          gradedCount++;
-        }
-      }
-    }
+  const keptEventIds = new Set(toSave.map((x) => x.g.espnEventId));
+
+  // Upsert every kept game in parallel instead of one at a time — this is
+  // the main thing that was making syncs slow, especially for CFB weeks
+  // with a dozen-plus games.
+  const savedGames = await Promise.all(
+    toSave.map(({ g, homeRank, awayRank, gameLabel }) =>
+      prisma.game.upsert({
+        where: { weekId_espnEventId: { weekId: week.id, espnEventId: g.espnEventId } },
+        update: {
+          status: g.status,
+          homeScore: g.homeScore,
+          awayScore: g.awayScore,
+          winner: g.winner,
+          homeLogo: g.homeLogo,
+          awayLogo: g.awayLogo,
+          homeLogoThrowback: g.homeLogoThrowback,
+          awayLogoThrowback: g.awayLogoThrowback,
+          homeRecord: g.homeRecord,
+          awayRecord: g.awayRecord,
+          homeRank,
+          awayRank,
+          gameLabel,
+        },
+        create: {
+          weekId: week.id,
+          espnEventId: g.espnEventId,
+          homeTeam: g.homeTeam,
+          awayTeam: g.awayTeam,
+          homeTeamAbbr: g.homeTeamAbbr,
+          awayTeamAbbr: g.awayTeamAbbr,
+          startTime: new Date(g.startTime),
+          status: g.status,
+          homeScore: g.homeScore,
+          awayScore: g.awayScore,
+          winner: g.winner,
+          homeLogo: g.homeLogo,
+          awayLogo: g.awayLogo,
+          homeLogoThrowback: g.homeLogoThrowback,
+          awayLogoThrowback: g.awayLogoThrowback,
+          homeRecord: g.homeRecord,
+          awayRecord: g.awayRecord,
+          homeRank,
+          awayRank,
+          gameLabel,
+        },
+      })
+    )
+  );
+  const savedCount = savedGames.length;
+
+  // Grade picks in two batched queries (one findMany, one set of parallel
+  // updates) instead of a query per game — meaningfully faster once a
+  // week has several finished games.
+  const finalGames = savedGames.filter((game) => game.status === "final" && game.winner);
+  let gradedCount = 0;
+  if (finalGames.length > 0) {
+    const winnerByGameId = new Map(finalGames.map((g) => [g.id, g.winner as "home" | "away" | "tie"]));
+    const picks = await prisma.pick.findMany({ where: { gameId: { in: finalGames.map((g) => g.id) } } });
+    const toUpdate = picks
+      .map((pick) => ({ pick, isCorrect: gradePick(pick.pickedTeam as "home" | "away", winnerByGameId.get(pick.gameId)!) }))
+      .filter(({ pick, isCorrect }) => pick.isCorrect !== isCorrect);
+    await Promise.all(toUpdate.map(({ pick, isCorrect }) => prisma.pick.update({ where: { id: pick.id }, data: { isCorrect } })));
+    gradedCount = toUpdate.length;
   }
 
   const removed = await prisma.game.deleteMany({
