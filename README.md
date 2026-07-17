@@ -56,6 +56,11 @@ switch the "Player" dropdown to look at a teammate's history too (their
 future/not-yet-started picks stay hidden, same privacy rule as the main
 matchups view — you only see picks on games that have already kicked off).
 
+## Who can change what
+- **Setting/changing a week's matchups is owner-only** — "Sync this week," "Sync full season," and the date-range fallback all can add, remove, or re-filter which games are in a week (e.g. a team drops out of the rankings), which would be disruptive once people have already made picks. Only the league owner sees these buttons.
+- **Refreshing scores is open to any member** — the "Refresh scores" button updates status/score/winner on games that are already set for the week and grades picks as games go final, but it can never add or remove a game. This is also what the cron job / external scheduler calls automatically — so background auto-syncing can never silently change what someone already picked.
+- **Fantasy matchups** stay open to any member to add/score, since those are inherently manual and collaborative rather than ESPN-sourced.
+
 ## League management
 - **Leave a league**: any member can remove themselves from the Members
   list on a league's page.

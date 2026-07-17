@@ -30,6 +30,13 @@ import { syncWeek, syncFullSeason, syncCfbWeek0, syncCfbPostseason, syncWeekByDa
  * week instead, unranked included — has no effect on NFL, CFB Week 0, or
  * CFB postseason, which always include every game regardless.
  *
+ * Owner-only: this can add or remove games from a week's picture (e.g. a
+ * team drops out of the rankings, or a re-sync pulls in games that
+ * weren't there before), which would be disruptive to change after
+ * people have already made picks. Once a week's matchups are set, use
+ * POST /api/leagues/:id/refresh-scores instead — any member can call
+ * that, and it only updates scores on games already in the week.
+ *
  * A full-season sync makes dozens of ESPN requests sequentially and can be
  * slow — see the note in lib/sync.ts about serverless timeouts.
  */
@@ -42,6 +49,12 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     where: { userId_leagueId: { userId, leagueId: params.id } },
   });
   if (!membership) return NextResponse.json({ error: "Not a member of this league" }, { status: 403 });
+  if (membership.role !== "owner") {
+    return NextResponse.json(
+      { error: "Only the league owner can set/change a week's matchups. Use Refresh Scores to update results instead." },
+      { status: 403 }
+    );
+  }
 
   const body = await req.json();
   const { sport, season, weekNumber, seasonType, full, dateRange, allGames } = body;

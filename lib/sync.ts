@@ -562,6 +562,126 @@ export async function syncFullSeason(leagueId: string, sport: Sport, season: num
  * correct) via gradePick's tie handling — most fantasy platforms don't
  * allow ties in H2H matchups, but it's handled defensively just in case.
  */
+/**
+ * Lightweight, non-destructive score refresh for a week that's already
+ * been set up. Unlike syncWeek/syncCfbWeek0/syncCfbPostseason, this never
+ * adds a new game to the week and never re-applies the ranked-only (or
+ * any other) filter — it only updates status/score/winner/rank/record on
+ * games that already exist in that week, and grades picks as games go
+ * final. This is what keeps "who's picking what" stable once the owner
+ * has set a week's matchups: anyone can refresh scores, but the game set
+ * itself only changes when the owner explicitly re-syncs it.
+ *
+ * Finds games by date range (spanning the existing games' kickoff times,
+ * with a day of padding) rather than trusting ESPN's week/year param —
+ * since we already know exactly which games we're looking for, this
+ * sidesteps the week-number reliability issues entirely.
+ */
+export async function refreshWeekScores(weekId: string) {
+  const week = await prisma.week.findUnique({ where: { id: weekId }, include: { games: true } });
+  if (!week || week.games.length === 0) return { gamesUpdated: 0, picksGraded: 0 };
+  if (week.sport === "FANTASY") return { gamesUpdated: 0, picksGraded: 0 }; // fantasy scores are entered by hand, not synced
+
+  const times = week.games.map((g) => new Date(g.startTime).getTime());
+  const minDate = new Date(Math.min(...times) - 24 * 60 * 60 * 1000);
+  const maxDate = new Date(Math.max(...times) + 24 * 60 * 60 * 1000);
+  const fmt = (d: Date) => d.toISOString().slice(0, 10).replace(/-/g, "");
+  const dateRange = `${fmt(minDate)}-${fmt(maxDate)}`;
+
+  let fetched: NormalizedGame[] = [];
+  try {
+    fetched = await fetchScoreboardByDate(week.sport as Sport, dateRange);
+  } catch {
+    return { gamesUpdated: 0, picksGraded: 0 }; // transient ESPN issue — leave existing data alone, try again next time
+  }
+
+  let rankings = new Map<string, number>();
+  if (week.sport === "CFB") {
+    try {
+      rankings = await fetchApPoll({ week: week.weekNumber, year: week.season, seasontype: week.seasonType });
+    } catch {
+      rankings = new Map();
+    }
+  }
+
+  const byEspnId = new Map(fetched.map((g) => [g.espnEventId, g]));
+  let gamesUpdated = 0;
+  let picksGraded = 0;
+
+  for (const existing of week.games) {
+    const g = byEspnId.get(existing.espnEventId);
+    if (!g) continue; // this game just isn't in today's fetch window — leave it as-is, not an error
+
+    const homeRank = rankings.get(g.homeTeamAbbr?.toUpperCase()) ?? existing.homeRank;
+    const awayRank = rankings.get(g.awayTeamAbbr?.toUpperCase()) ?? existing.awayRank;
+
+    const unchanged =
+      existing.status === g.status &&
+      existing.homeScore === g.homeScore &&
+      existing.awayScore === g.awayScore &&
+      existing.homeRank === homeRank &&
+      existing.awayRank === awayRank;
+    if (unchanged) continue;
+
+    const updated = await prisma.game.update({
+      where: { id: existing.id },
+      data: {
+        status: g.status,
+        homeScore: g.homeScore,
+        awayScore: g.awayScore,
+        winner: g.winner,
+        homeRecord: g.homeRecord,
+        awayRecord: g.awayRecord,
+        homeRank,
+        awayRank,
+      },
+    });
+    gamesUpdated++;
+
+    if (updated.status === "final" && updated.winner) {
+      const picks = await prisma.pick.findMany({ where: { gameId: updated.id } });
+      for (const pick of picks) {
+        const isCorrect = gradePick(pick.pickedTeam as "home" | "away", updated.winner as any);
+        if (pick.isCorrect !== isCorrect) {
+          await prisma.pick.update({ where: { id: pick.id }, data: { isCorrect } });
+          picksGraded++;
+        }
+      }
+    }
+  }
+
+  return { gamesUpdated, picksGraded };
+}
+
+/**
+ * Score-refresh version of refreshWeekScores for every active (non-final)
+ * NFL/CFB week across every league — this is what the cron job and any
+ * member's "Refresh scores" button should call, since neither should ever
+ * be able to change which games are in a week.
+ */
+export async function refreshAllActiveWeeks() {
+  const activeWeeks = await prisma.week.findMany({
+    where: { sport: { in: ["NFL", "CFB"] }, games: { some: { status: { not: "final" } } } },
+  });
+
+  const results = [];
+  for (const week of activeWeeks) {
+    try {
+      const result = await refreshWeekScores(week.id);
+      results.push({ weekId: week.id, ...result });
+    } catch (err: any) {
+      results.push({ weekId: week.id, error: err.message });
+    }
+  }
+  return { weeksChecked: results.length, results };
+}
+
+/**
+ * Set the final score on a manually-entered game (e.g. a fantasy matchup)
+ * and grade every pick tied to it. Ties are graded as a push (no one
+ * correct) via gradePick's tie handling — most fantasy platforms don't
+ * allow ties in H2H matchups, but it's handled defensively just in case.
+ */
 export async function gradeManualGame(gameId: string, homeScore: number, awayScore: number) {
   const winner: "home" | "away" | "tie" = homeScore === awayScore ? "tie" : homeScore > awayScore ? "home" : "away";
 

@@ -1,13 +1,15 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
-import { syncWeek } from "@/lib/sync";
+import { refreshAllActiveWeeks } from "@/lib/sync";
 
 /**
  * GET /api/cron/sync?secret=CRON_SECRET
  *
- * Intended to be hit on a schedule (see vercel.json) rather than by users.
- * Re-syncs every Week that has at least one non-final game, so scores and
- * pick grading stay current without anyone manually clicking "Sync".
+ * Intended to be hit on a schedule (see vercel.json / your external cron
+ * service) rather than by users. This only refreshes scores on games that
+ * already exist — it deliberately does NOT re-sync/re-filter a week's
+ * matchups (that's owner-only, via POST /api/leagues/:id/sync), so an
+ * automated background job can never change what people have already
+ * picked against.
  */
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -15,25 +17,6 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const activeWeeks = await prisma.week.findMany({
-    where: { sport: { in: ["NFL", "CFB"] }, games: { some: { status: { not: "final" } } } },
-  });
-
-  const results = [];
-  for (const week of activeWeeks) {
-    try {
-      const result = await syncWeek(
-        week.leagueId,
-        week.sport as "NFL" | "CFB",
-        week.season,
-        week.weekNumber,
-        week.seasonType
-      );
-      results.push({ ...result, weekId: week.id });
-    } catch (err: any) {
-      results.push({ weekId: week.id, error: err.message });
-    }
-  }
-
-  return NextResponse.json({ weeksSynced: results.length, results });
+  const result = await refreshAllActiveWeeks();
+  return NextResponse.json(result);
 }

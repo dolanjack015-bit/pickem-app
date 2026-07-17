@@ -89,6 +89,8 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
   const [seasonType, setSeasonType] = useState(2);
   const [games, setGames] = useState<Game[]>([]);
   const [picksLockAt, setPicksLockAt] = useState<string | null>(null);
+  const [currentWeekId, setCurrentWeekId] = useState<string | null>(null);
+  const [refreshingScores, setRefreshingScores] = useState(false);
   const [leaderboards, setLeaderboards] = useState<Record<string, LeaderboardRow[]>>({
     ALL: [],
     NFL: [],
@@ -138,6 +140,7 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
       const data = await res.json();
       setGames(data.games ?? []);
       setPicksLockAt(data.picksLockAt ?? null);
+      setCurrentWeekId(data.weekId ?? null);
     }
     setLoading(false);
   }, [params.id, sport, season, weekNumber, seasonType]);
@@ -192,6 +195,30 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
   useEffect(() => {
     if (status === "authenticated" && showArchive) loadArchive();
   }, [status, showArchive, loadArchive]);
+
+  async function handleRefreshScores() {
+    if (!currentWeekId) {
+      setMessage("Nothing to refresh yet — this week hasn't been set up by the league owner.");
+      return;
+    }
+    setRefreshingScores(true);
+    setMessage(null);
+    const res = await fetch(`/api/leagues/${params.id}/refresh-scores`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ weekId: currentWeekId }),
+    });
+    const data = await safeJson(res);
+    if (res.ok) {
+      setMessage(`Refreshed ${data.gamesUpdated} game${data.gamesUpdated === 1 ? "" : "s"}, graded ${data.picksGraded} pick${data.picksGraded === 1 ? "" : "s"}.`);
+      await loadWeek();
+      await loadLeaderboard();
+      await loadWeeklyLeaderboard();
+    } else {
+      setMessage(data.error || "Refresh failed");
+    }
+    setRefreshingScores(false);
+  }
 
   async function handleSync() {
     setSyncing(true);
@@ -356,8 +383,18 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
             </button>
           )}
           {sport !== "FANTASY" && (
+            <button
+              onClick={handleRefreshScores}
+              disabled={refreshingScores || !currentWeekId}
+              className="px-4 py-2 rounded-lg border border-white/20 hover:border-white/40 transition-colors text-sm disabled:opacity-50"
+              title="Updates scores on games already set for this week — doesn't add or remove any games"
+            >
+              {refreshingScores ? "Refreshing..." : "Refresh scores"}
+            </button>
+          )}
+          {sport !== "FANTASY" && league?.role === "owner" && (
             <>
-              <button onClick={handleSync} disabled={syncing} className="btn-primary">
+              <button onClick={handleSync} disabled={syncing} className="btn-primary" title="Sets/changes which games are in this week — owner only">
                 {syncing ? "Syncing..." : "Sync this week"}
               </button>
               <button
@@ -371,6 +408,13 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
           )}
         </div>
       </div>
+
+      {sport !== "FANTASY" && league?.role !== "owner" && (
+        <p className="text-xs text-white/40 -mt-6">
+          Only the league owner sets which games are up for picks each week. You can refresh scores any time — it won't
+          change what's already been picked.
+        </p>
+      )}
 
       <div className="card p-4 flex flex-wrap gap-3 items-end">
         <label className="flex flex-col text-sm gap-1">
@@ -441,7 +485,7 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
         </p>
       )}
 
-      {sport === "CFB" && seasonType === 2 && (
+      {sport === "CFB" && seasonType === 2 && league?.role === "owner" && (
         <label className="flex items-center gap-2 text-sm -mt-4 self-start">
           <input type="checkbox" checked={cfbAllGames} onChange={(e) => setCfbAllGames(e.target.checked)} className="w-4 h-4" />
           Sync every game this week (not just AP-ranked matchups)
@@ -491,7 +535,7 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
 
       {message && <p className="text-sm text-pigskin">{message}</p>}
 
-      {sport !== "FANTASY" && (
+      {sport !== "FANTASY" && league?.role === "owner" && (
         <button onClick={() => setShowDateFallback((v) => !v)} className="text-xs text-white/40 hover:text-white/70 transition-colors -mt-4 self-start text-left">
           {showDateFallback
             ? "Hide"
@@ -501,7 +545,7 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
         </button>
       )}
 
-      {showDateFallback && sport !== "FANTASY" && (
+      {showDateFallback && sport !== "FANTASY" && league?.role === "owner" && (
         <div className="card p-4 flex flex-wrap gap-3 items-end">
           <p className="text-xs text-white/50 basis-full">
             {sport === "CFB"
@@ -546,9 +590,15 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
           <p className="text-white/60">Loading...</p>
         ) : games.length === 0 ? (
           <p className="text-white/60">
-            {sport === "FANTASY"
-              ? "No matchups added for this week yet. Use the form above to add one."
-              : <>No games loaded for this slate yet. Click <strong>Sync this week</strong> (or <strong>Sync full season</strong>) to pull it from ESPN.</>}
+            {sport === "FANTASY" ? (
+              "No matchups added for this week yet. Use the form above to add one."
+            ) : league?.role === "owner" ? (
+              <>
+                No games loaded for this slate yet. Click <strong>Sync this week</strong> (or <strong>Sync full season</strong>) to pull it from ESPN.
+              </>
+            ) : (
+              "The league owner hasn't set up this week's matchups yet — check back soon."
+            )}
           </p>
         ) : (
           <div className="grid sm:grid-cols-2 gap-4">
