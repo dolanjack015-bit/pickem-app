@@ -117,6 +117,9 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
   const [archiveRows, setArchiveRows] = useState<PickHistoryRow[]>([]);
   const [archiveLoading, setArchiveLoading] = useState(false);
   const [cfbAllGames, setCfbAllGames] = useState(false);
+  const [showPickStatus, setShowPickStatus] = useState(false);
+  const [pickStatus, setPickStatus] = useState<{ games: { id: string; label: string; gameLabel: string | null }[]; members: { userId: string; username: string; picked: boolean[]; totalPicked: number; totalGames: number }[] }>({ games: [], members: [] });
+  const [pickStatusLoading, setPickStatusLoading] = useState(false);
 
   useEffect(() => {
     if (status === "unauthenticated") router.push("/login");
@@ -195,6 +198,17 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
   useEffect(() => {
     if (status === "authenticated" && showArchive) loadArchive();
   }, [status, showArchive, loadArchive]);
+
+  const loadPickStatus = useCallback(async () => {
+    setPickStatusLoading(true);
+    const res = await fetch(`/api/leagues/${params.id}/pick-status?sport=${sport}&season=${season}&weekNumber=${weekNumber}&seasonType=${seasonType}`);
+    setPickStatus(res.ok ? await res.json() : { games: [], members: [] });
+    setPickStatusLoading(false);
+  }, [params.id, sport, season, weekNumber, seasonType]);
+
+  useEffect(() => {
+    if (status === "authenticated" && showPickStatus && league?.role === "owner") loadPickStatus();
+  }, [status, showPickStatus, loadPickStatus, league?.role]);
 
   async function handleRefreshScores() {
     if (!currentWeekId) {
@@ -394,6 +408,7 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
     });
     if (res.ok) {
       await loadWeek();
+      if (showPickStatus && league?.role === "owner") await loadPickStatus();
     } else {
       const data = await res.json();
       setMessage(data.error);
@@ -664,6 +679,58 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
         </h2>
         <WeeklyLeaderboardTable rows={weeklyLeaderboard} />
       </div>
+
+      {league?.role === "owner" && (
+        <div>
+          <button onClick={() => setShowPickStatus((v) => !v)} className="font-display text-xl mb-3 hover:text-pigskin transition-colors">
+            Pick Completion {showPickStatus ? "▾" : "▸"}
+          </button>
+          {showPickStatus && (
+            <div className="flex flex-col gap-3">
+              <p className="text-xs text-white/40">
+                Shows who has submitted a pick for each game this week — not what anyone actually picked, just whether
+                it's saved. Use this to check everyone's in before a week locks.
+              </p>
+              <div className="card overflow-x-auto">
+                {pickStatusLoading ? (
+                  <p className="text-white/40 text-xs px-4 py-4">Loading...</p>
+                ) : pickStatus.games.length === 0 ? (
+                  <p className="text-white/40 text-xs px-4 py-4">No games set for this week yet.</p>
+                ) : (
+                  <table className="text-sm">
+                    <thead className="bg-white/5 text-left">
+                      <tr>
+                        <th className="px-4 py-2 whitespace-nowrap">Player</th>
+                        {pickStatus.games.map((g) => (
+                          <th key={g.id} className="px-3 py-2 text-center whitespace-nowrap text-xs font-normal text-white/60" title={g.gameLabel ?? undefined}>
+                            {g.label}
+                          </th>
+                        ))}
+                        <th className="px-4 py-2 text-center whitespace-nowrap">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pickStatus.members.map((m) => (
+                        <tr key={m.userId} className="border-t border-white/10">
+                          <td className="px-4 py-2 whitespace-nowrap">{m.username}</td>
+                          {m.picked.map((picked, i) => (
+                            <td key={pickStatus.games[i].id} className="px-3 py-2 text-center">
+                              {picked ? <span className="text-green-400">✓</span> : <span className="text-white/20">—</span>}
+                            </td>
+                          ))}
+                          <td className="px-4 py-2 text-center whitespace-nowrap text-white/60">
+                            {m.totalPicked}/{m.totalGames}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       <div>
         <h2 className="font-display text-xl mb-3">Members</h2>
