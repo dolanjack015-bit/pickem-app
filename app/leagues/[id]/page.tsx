@@ -120,6 +120,7 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
   const [showPickStatus, setShowPickStatus] = useState(false);
   const [pickStatus, setPickStatus] = useState<{ games: { id: string; label: string; gameLabel: string | null }[]; members: { userId: string; username: string; picked: boolean[]; totalPicked: number; totalGames: number }[] }>({ games: [], members: [] });
   const [pickStatusLoading, setPickStatusLoading] = useState(false);
+  const [pickStatusError, setPickStatusError] = useState<string | null>(null);
 
   useEffect(() => {
     if (status === "unauthenticated") router.push("/login");
@@ -201,8 +202,15 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
 
   const loadPickStatus = useCallback(async () => {
     setPickStatusLoading(true);
+    setPickStatusError(null);
     const res = await fetch(`/api/leagues/${params.id}/pick-status?sport=${sport}&season=${season}&weekNumber=${weekNumber}&seasonType=${seasonType}`);
-    setPickStatus(res.ok ? await res.json() : { games: [], members: [] });
+    const data = await safeJson(res);
+    if (res.ok) {
+      setPickStatus(data);
+    } else {
+      setPickStatus({ games: [], members: [] });
+      setPickStatusError(`${res.status}: ${data.error || "request failed"}`);
+    }
     setPickStatusLoading(false);
   }, [params.id, sport, season, weekNumber, seasonType]);
 
@@ -694,6 +702,8 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
               <div className="card overflow-x-auto">
                 {pickStatusLoading ? (
                   <p className="text-white/40 text-xs px-4 py-4">Loading...</p>
+                ) : pickStatusError ? (
+                  <p className="text-red-400 text-xs px-4 py-4">Couldn&rsquo;t load pick status: {pickStatusError}</p>
                 ) : pickStatus.games.length === 0 ? (
                   <p className="text-white/40 text-xs px-4 py-4">No games set for this week yet.</p>
                 ) : (
