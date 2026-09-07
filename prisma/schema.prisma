@@ -83,6 +83,7 @@ model Game {
   awayRank            Int?
   gameLabel           String? // e.g. "Bowl: Rose Bowl", "Army-Navy", "Conference Championship", "Week 0"
   isManual            Boolean  @default(false) // true for hand-entered games (e.g. fantasy matchups) not synced from ESPN
+  pickDeadlineOverride DateTime? // owner-set custom lock time for THIS game only; takes precedence over the week-wide lock. Never affects saved picks — only when new/changed picks are accepted.
 
   week  Week   @relation(fields: [weekId], references: [id], onDelete: Cascade)
   picks Pick[]

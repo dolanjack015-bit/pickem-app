@@ -36,11 +36,21 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
 
   const now = Date.now();
   const weekLocked = week.sport !== "FANTASY" && !!week.picksLockAt && new Date(week.picksLockAt).getTime() <= now;
+
   const games = week.games.map((game) => {
-    const started =
-      week.sport === "FANTASY"
-        ? new Date(game.startTime).getTime() <= now || game.status !== "scheduled"
-        : weekLocked || game.status !== "scheduled";
+    // A per-game deadline override (set by the owner) takes precedence
+    // over the normal week-wide or fantasy per-game lock — this is what
+    // lets the owner reopen one game past a missed deadline, or fix a
+    // bad date, without touching anything else in the week.
+    let locked: boolean;
+    if (game.pickDeadlineOverride) {
+      locked = new Date(game.pickDeadlineOverride).getTime() <= now;
+    } else if (week.sport === "FANTASY") {
+      locked = new Date(game.startTime).getTime() <= now || game.status !== "scheduled";
+    } else {
+      locked = weekLocked || game.status !== "scheduled";
+    }
+
     return {
       id: game.id,
       homeTeam: game.homeTeam,
@@ -62,9 +72,10 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       awayRank: game.awayRank,
       gameLabel: game.gameLabel,
       isManual: game.isManual,
-      locked: week.sport === "FANTASY" ? started : weekLocked,
+      pickDeadlineOverride: game.pickDeadlineOverride,
+      locked,
       myPick: game.picks.find((p) => p.userId === userId)?.pickedTeam ?? null,
-      picks: started
+      picks: locked
         ? game.picks.map((p) => ({ username: p.user.username, pickedTeam: p.pickedTeam, isCorrect: p.isCorrect }))
         : game.picks
             .filter((p) => p.userId === userId)

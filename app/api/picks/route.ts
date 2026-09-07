@@ -21,7 +21,14 @@ export async function POST(req: Request) {
   });
   if (!membership) return NextResponse.json({ error: "Not a member of this league" }, { status: 403 });
 
-  if (game.week.sport === "FANTASY") {
+  if (game.pickDeadlineOverride) {
+    // Owner has explicitly set a custom deadline for this specific game —
+    // takes precedence over the normal week-wide or per-game lock,
+    // whether that means reopening a locked game or tightening one early.
+    if (new Date(game.pickDeadlineOverride).getTime() <= Date.now()) {
+      return NextResponse.json({ error: "Picks for this game are locked (custom deadline set by the league owner)" }, { status: 400 });
+    }
+  } else if (game.week.sport === "FANTASY") {
     if (game.status !== "scheduled" || new Date(game.startTime).getTime() <= Date.now()) {
       return NextResponse.json({ error: "Picks lock once this matchup's start time has passed" }, { status: 400 });
     }
