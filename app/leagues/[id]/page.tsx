@@ -26,6 +26,7 @@ type Game = {
   awayRank: number | null;
   gameLabel: string | null;
   isManual: boolean;
+  pickDeadlineOverride: string | null;
   locked: boolean;
   myPick: "home" | "away" | null;
   picks: { username: string; pickedTeam: string; isCorrect: boolean | null }[];
@@ -408,6 +409,20 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
     }
   }
 
+  async function handleSetDeadline(gameId: string, deadline: string | null) {
+    const res = await fetch(`/api/leagues/${params.id}/games/${gameId}/deadline`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deadline }),
+    });
+    if (res.ok) {
+      await loadWeek();
+    } else {
+      const data = await safeJson(res);
+      setMessage(data.error || "Failed to update deadline");
+    }
+  }
+
   async function handlePick(gameId: string, pickedTeam: "home" | "away") {
     const res = await fetch("/api/picks", {
       method: "POST",
@@ -675,6 +690,7 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
                 onSetScore={handleSetFantasyScore}
                 onDelete={handleDeleteFantasyGame}
                 onRemoveGame={handleRemoveGame}
+                onSetDeadline={handleSetDeadline}
               />
             ))}
           </div>
@@ -956,6 +972,7 @@ function GameCard({
   onSetScore,
   onDelete,
   onRemoveGame,
+  onSetDeadline,
 }: {
   game: Game;
   sport: string;
@@ -964,10 +981,12 @@ function GameCard({
   onSetScore: (gameId: string, homeScore: number, awayScore: number) => void;
   onDelete: (gameId: string) => void;
   onRemoveGame: (gameId: string) => void;
+  onSetDeadline: (gameId: string, deadline: string | null) => void;
 }) {
   const locked = game.locked;
   const [homeInput, setHomeInput] = useState(game.homeScore?.toString() ?? "");
   const [awayInput, setAwayInput] = useState(game.awayScore?.toString() ?? "");
+  const [deadlineInput, setDeadlineInput] = useState("");
 
   return (
     <div className="card p-4 flex flex-col gap-3">
@@ -1017,6 +1036,35 @@ function GameCard({
           onClick={() => onPick(game.id, "home")}
         />
       </div>
+      {isOwner && (
+        <div className="flex items-center gap-2 border-t border-white/10 pt-3 text-xs flex-wrap">
+          {game.pickDeadlineOverride ? (
+            <>
+              <span className="text-pigskin">Custom deadline: {new Date(game.pickDeadlineOverride).toLocaleString()}</span>
+              <button onClick={() => onSetDeadline(game.id, null)} className="text-white/40 hover:text-white/70 underline">
+                Clear (use normal lock)
+              </button>
+            </>
+          ) : (
+            <>
+              <span className="text-white/40">Reopen or fix this game&rsquo;s deadline:</span>
+              <input
+                type="datetime-local"
+                value={deadlineInput}
+                onChange={(e) => setDeadlineInput(e.target.value)}
+                className="bg-black/20 border border-white/15 rounded px-2 py-1"
+              />
+              <button
+                onClick={() => deadlineInput && onSetDeadline(game.id, new Date(deadlineInput).toISOString())}
+                disabled={!deadlineInput}
+                className="btn-primary text-xs py-1 px-2 disabled:opacity-50"
+              >
+                Set
+              </button>
+            </>
+          )}
+        </div>
+      )}
       {game.isManual && isOwner && (
         <div className="flex items-end gap-2 border-t border-white/10 pt-3 text-xs">
           <label className="flex flex-col gap-1">
