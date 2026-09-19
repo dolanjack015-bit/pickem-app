@@ -603,12 +603,6 @@ export async function syncFullSeason(leagueId: string, sport: Sport, season: num
 }
 
 /**
- * Set the final score on a manually-entered game (e.g. a fantasy matchup)
- * and grade every pick tied to it. Ties are graded as a push (no one
- * correct) via gradePick's tie handling — most fantasy platforms don't
- * allow ties in H2H matchups, but it's handled defensively just in case.
- */
-/**
  * Lightweight, non-destructive score refresh for a week that's already
  * been set up. Unlike syncWeek/syncCfbWeek0/syncCfbPostseason, this never
  * adds a new game to the week and never re-applies the ranked-only (or
@@ -656,38 +650,67 @@ export async function refreshWeekScores(weekId: string) {
 
   for (const existing of week.games) {
     const g = byEspnId.get(existing.espnEventId);
-    if (!g) continue; // this game just isn't in today's fetch window — leave it as-is, not an error
 
-    const homeRank = rankings.get(g.homeTeamAbbr?.toUpperCase()) ?? existing.homeRank;
-    const awayRank = rankings.get(g.awayTeamAbbr?.toUpperCase()) ?? existing.awayRank;
+    // Track the status/winner we should trust for grading purposes below —
+    // either freshly fetched (if we updated the game this pass) or
+    // whatever was already saved (if we didn't).
+    let effectiveStatus = existing.status;
+    let effectiveWinner = existing.winner;
 
-    const unchanged =
-      existing.status === g.status &&
-      existing.homeScore === g.homeScore &&
-      existing.awayScore === g.awayScore &&
-      existing.homeRank === homeRank &&
-      existing.awayRank === awayRank;
-    if (unchanged) continue;
+    if (g) {
+      const homeRank = rankings.get(g.homeTeamAbbr?.toUpperCase()) ?? existing.homeRank;
+      const awayRank = rankings.get(g.awayTeamAbbr?.toUpperCase()) ?? existing.awayRank;
 
-    const updated = await prisma.game.update({
-      where: { id: existing.id },
-      data: {
-        status: g.status,
-        homeScore: g.homeScore,
-        awayScore: g.awayScore,
-        winner: g.winner,
-        homeRecord: g.homeRecord,
-        awayRecord: g.awayRecord,
-        homeRank,
-        awayRank,
-      },
-    });
-    gamesUpdated++;
+      // BUGFIX: this comparison used to omit `winner`. That meant a game
+      // whose winner was ever saved wrong or blank on some earlier pass
+      // (e.g. ESPN briefly reporting "final" before its winner flag
+      // populated) would look "unchanged" on every future refresh — since
+      // status/score/ranks all matched — and get skipped forever, even
+      // though the game was genuinely over. Comparing `winner` too closes
+      // that gap.
+      const unchanged =
+        existing.status === g.status &&
+        existing.homeScore === g.homeScore &&
+        existing.awayScore === g.awayScore &&
+        existing.winner === g.winner &&
+        existing.homeRank === homeRank &&
+        existing.awayRank === awayRank;
 
-    if (updated.status === "final" && updated.winner) {
-      const picks = await prisma.pick.findMany({ where: { gameId: updated.id } });
+      if (!unchanged) {
+        const updated = await prisma.game.update({
+          where: { id: existing.id },
+          data: {
+            status: g.status,
+            homeScore: g.homeScore,
+            awayScore: g.awayScore,
+            winner: g.winner,
+            homeRecord: g.homeRecord,
+            awayRecord: g.awayRecord,
+            homeRank,
+            awayRank,
+          },
+        });
+        gamesUpdated++;
+        effectiveStatus = updated.status;
+        effectiveWinner = updated.winner;
+      }
+    }
+    // If `g` wasn't found in this fetch window, we just fall through with
+    // whatever was already saved (`existing.status`/`existing.winner`) —
+    // same behavior as before for that case.
+
+    // Safety net: whenever a game is (or already was) final with a
+    // winner, always re-verify its picks are graded correctly — even if
+    // nothing changed on this particular pass. This is what makes the
+    // fix durable against *any* future partial-write edge case (not just
+    // the exact one diagnosed above) permanently stranding a game
+    // ungraded: every refresh re-checks every final game's picks, and
+    // `pick.isCorrect !== isCorrect` below means already-correct picks
+    // are cheap no-ops, not repeated writes.
+    if (effectiveStatus === "final" && effectiveWinner) {
+      const picks = await prisma.pick.findMany({ where: { gameId: existing.id } });
       for (const pick of picks) {
-        const isCorrect = gradePick(pick.pickedTeam as "home" | "away", updated.winner as any);
+        const isCorrect = gradePick(pick.pickedTeam as "home" | "away", effectiveWinner as any);
         if (pick.isCorrect !== isCorrect) {
           await prisma.pick.update({ where: { id: pick.id }, data: { isCorrect } });
           picksGraded++;
@@ -714,7 +737,7 @@ export async function refreshAllActiveWeeks() {
   for (const week of activeWeeks) {
     try {
       const result = await refreshWeekScores(week.id);
-      results.push({ weekId: week.id, ...result });
+      results.push({ ...result, weekId: week.id });
     } catch (err: any) {
       results.push({ weekId: week.id, error: err.message });
     }
