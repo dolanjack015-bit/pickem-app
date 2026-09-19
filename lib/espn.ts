@@ -66,6 +66,46 @@ function recordSummary(competitor: any): string | null {
   return total?.summary ?? null;
 }
 
+function normalizeEvent(event: any): NormalizedGame {
+  const competition = event.competitions[0];
+  const competitors = competition.competitors;
+  const home = competitors.find((c: any) => c.homeAway === "home");
+  const away = competitors.find((c: any) => c.homeAway === "away");
+  const state: string = competition.status.type.state; // "pre" | "in" | "post"
+  const status = mapStatus(state);
+
+  let winner: NormalizedGame["winner"] = null;
+  if (status === "final") {
+    if (home.winner) winner = "home";
+    else if (away.winner) winner = "away";
+    else winner = "tie";
+  }
+
+  const homeLogos = pickLogo(home.team);
+  const awayLogos = pickLogo(away.team);
+  const notes: string[] = (competition.notes ?? []).map((n: any) => n.headline).filter(Boolean);
+
+  return {
+    espnEventId: event.id,
+    homeTeam: home.team.displayName,
+    awayTeam: away.team.displayName,
+    homeTeamAbbr: home.team.abbreviation,
+    awayTeamAbbr: away.team.abbreviation,
+    startTime: event.date,
+    status,
+    homeScore: home.score != null ? Number(home.score) : null,
+    awayScore: away.score != null ? Number(away.score) : null,
+    winner,
+    homeLogo: homeLogos.default,
+    awayLogo: awayLogos.default,
+    homeLogoThrowback: homeLogos.throwback,
+    awayLogoThrowback: awayLogos.throwback,
+    homeRecord: recordSummary(home),
+    awayRecord: recordSummary(away),
+    notes,
+  };
+}
+
 /**
  * Fetch a scoreboard slate.
  *
@@ -125,47 +165,33 @@ export async function fetchScoreboard(
     }
   }
 
-  const games: NormalizedGame[] = events.map((event: any) => {
-    const competition = event.competitions[0];
-    const competitors = competition.competitors;
-    const home = competitors.find((c: any) => c.homeAway === "home");
-    const away = competitors.find((c: any) => c.homeAway === "away");
-    const state: string = competition.status.type.state; // "pre" | "in" | "post"
-    const status = mapStatus(state);
+  return events.map(normalizeEvent);
+}
 
-    let winner: NormalizedGame["winner"] = null;
-    if (status === "final") {
-      if (home.winner) winner = "home";
-      else if (away.winner) winner = "away";
-      else winner = "tie";
-    }
+/** Fetch one exact calendar date (YYYYMMDD) from ESPN's scoreboard. Throws on a non-2xx response. */
+async function fetchEventsForSingleDate(path: string, dateYYYYMMDD: string): Promise<any[]> {
+  const url = `https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard?dates=${dateYYYYMMDD}&limit=400`;
+  const res = await fetch(url, { next: { revalidate: 0 } });
+  if (!res.ok) throw new Error(`ESPN scoreboard fetch failed (${res.status}): ${url}`);
+  const data = await res.json();
+  return data.events ?? [];
+}
 
-    const homeLogos = pickLogo(home.team);
-    const awayLogos = pickLogo(away.team);
-    const notes: string[] = (competition.notes ?? []).map((n: any) => n.headline).filter(Boolean);
-
-    return {
-      espnEventId: event.id,
-      homeTeam: home.team.displayName,
-      awayTeam: away.team.displayName,
-      homeTeamAbbr: home.team.abbreviation,
-      awayTeamAbbr: away.team.abbreviation,
-      startTime: event.date,
-      status,
-      homeScore: home.score != null ? Number(home.score) : null,
-      awayScore: away.score != null ? Number(away.score) : null,
-      winner,
-      homeLogo: homeLogos.default,
-      awayLogo: awayLogos.default,
-      homeLogoThrowback: homeLogos.throwback,
-      awayLogoThrowback: awayLogos.throwback,
-      homeRecord: recordSummary(home),
-      awayRecord: recordSummary(away),
-      notes,
-    };
-  });
-
-  return games;
+/** Enumerate every calendar date (as YYYYMMDD strings) from start to end, inclusive. */
+function enumerateDates(startStr: string, endStr: string): string[] {
+  const toUtcMidnight = (s: string) => Date.UTC(Number(s.slice(0, 4)), Number(s.slice(4, 6)) - 1, Number(s.slice(6, 8)));
+  const startMs = toUtcMidnight(startStr);
+  const endMs = toUtcMidnight(endStr);
+  const DAY = 24 * 60 * 60 * 1000;
+  const out: string[] = [];
+  for (let t = startMs; t <= endMs; t += DAY) {
+    const d = new Date(t);
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(d.getUTCDate()).padStart(2, "0");
+    out.push(`${y}${m}${day}`);
+  }
+  return out;
 }
 
 /**
@@ -175,62 +201,45 @@ export async function fetchScoreboard(
  * the wrong season (see the check in fetchScoreboard) — ESPN's date-based
  * lookup doesn't depend on that internal week-indexing being ready.
  *
- * ESPN's `dates=` param isn't always a hard boundary — for CFB especially,
- * it can return games outside the requested range. Results are filtered
- * client-side against the requested range as a hard cutoff, so this
- * function's output always matches what you asked for even if ESPN's
- * response didn't.
+ * ESPN's scoreboard endpoint has stopped accepting a multi-day `dates=`
+ * range outright (confirmed: it now returns an HTTP 400 "Failed to get
+ * events endpoint" for anything like "20260917-20260918", even a 2-day
+ * span — only a single exact date still works). So a "range" here is
+ * fetched as one request per calendar day and merged, rather than as one
+ * request with a range parameter. Results are still filtered client-side
+ * against the requested range as a hard cutoff, so this function's output
+ * always matches what you asked for.
  */
 export async function fetchScoreboardByDate(sport: "NFL" | "CFB", dateYYYYMMDD: string): Promise<NormalizedGame[]> {
   const path = SPORT_PATHS[sport];
-  const url = `https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard?dates=${dateYYYYMMDD}&limit=400`;
+  const [startStr, endStr] = dateYYYYMMDD.split("-");
+  const datesToFetch = !endStr || endStr === startStr ? [startStr] : enumerateDates(startStr, endStr);
 
-  const res = await fetch(url, { next: { revalidate: 0 } });
-  if (!res.ok) throw new Error(`ESPN scoreboard fetch failed (${res.status}): ${url}`);
-  const data = await res.json();
+  const seenIds = new Set<string>();
+  const rawEvents: any[] = [];
+  let lastError: unknown = null;
+  for (const d of datesToFetch) {
+    try {
+      const events = await fetchEventsForSingleDate(path, d);
+      for (const e of events) {
+        if (!seenIds.has(e.id)) {
+          seenIds.add(e.id);
+          rawEvents.push(e);
+        }
+      }
+    } catch (err) {
+      // One bad day inside a multi-day range shouldn't sink the whole
+      // fetch — remember the error in case every single day fails (in
+      // which case we do want to surface it), but keep going.
+      lastError = err;
+    }
+  }
+  if (rawEvents.length === 0 && datesToFetch.length > 0 && lastError) {
+    throw lastError;
+  }
 
   const { start, end } = parseDateRangeBounds(dateYYYYMMDD);
-
-  const events = data.events ?? [];
-  const games = events.map((event: any) => {
-    const competition = event.competitions[0];
-    const competitors = competition.competitors;
-    const home = competitors.find((c: any) => c.homeAway === "home");
-    const away = competitors.find((c: any) => c.homeAway === "away");
-    const state: string = competition.status.type.state;
-    const status = mapStatus(state);
-
-    let winner: NormalizedGame["winner"] = null;
-    if (status === "final") {
-      if (home.winner) winner = "home";
-      else if (away.winner) winner = "away";
-      else winner = "tie";
-    }
-
-    const homeLogos = pickLogo(home.team);
-    const awayLogos = pickLogo(away.team);
-    const notes: string[] = (competition.notes ?? []).map((n: any) => n.headline).filter(Boolean);
-
-    return {
-      espnEventId: event.id,
-      homeTeam: home.team.displayName,
-      awayTeam: away.team.displayName,
-      homeTeamAbbr: home.team.abbreviation,
-      awayTeamAbbr: away.team.abbreviation,
-      startTime: event.date,
-      status,
-      homeScore: home.score != null ? Number(home.score) : null,
-      awayScore: away.score != null ? Number(away.score) : null,
-      winner,
-      homeLogo: homeLogos.default,
-      awayLogo: awayLogos.default,
-      homeLogoThrowback: homeLogos.throwback,
-      awayLogoThrowback: awayLogos.throwback,
-      homeRecord: recordSummary(home),
-      awayRecord: recordSummary(away),
-      notes,
-    };
-  });
+  const games = rawEvents.map(normalizeEvent);
 
   return games.filter((g: NormalizedGame) => {
     const t = new Date(g.startTime).getTime();
