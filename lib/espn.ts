@@ -1,79 +1,342 @@
-import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+// Thin client around ESPN's public (unofficial, unauthenticated) scoreboard
+// and rankings endpoints. No API key needed. These are the same JSON feeds
+// that power espn.com's scoreboard pages.
+//
+// These endpoints are unofficial and can change or rate-limit without
+// notice, and a few of the parameter conventions below (notably CFB
+// "Week 0" handling) are based on documented community usage rather than
+// something verifiable from this sandbox (it has no network access to
+// test against). If a specific slate looks off once you're running this
+// for real, the fix is almost always a tweak to the query params in this
+// file — the rest of the app doesn't care where the data comes from.
+
+export type NormalizedGame = {
+  espnEventId: string;
+  homeTeam: string;
+  awayTeam: string;
+  homeTeamAbbr: string;
+  awayTeamAbbr: string;
+  startTime: string; // ISO
+  status: "scheduled" | "in_progress" | "final";
+  homeScore: number | null;
+  awayScore: number | null;
+  winner: "home" | "away" | "tie" | null;
+  homeLogo: string | null;
+  awayLogo: string | null;
+  homeLogoThrowback: string | null;
+  awayLogoThrowback: string | null;
+  homeRecord: string | null;
+  awayRecord: string | null;
+  notes: string[]; // e.g. ["Rose Bowl", "Big Ten Championship"]
+};
+
+const SPORT_PATHS: Record<string, string> = {
+  NFL: "football/nfl",
+  CFB: "football/college-football",
+};
+
+function mapStatus(state: string): NormalizedGame["status"] {
+  if (state === "post") return "final";
+  if (state === "in") return "in_progress";
+  return "scheduled";
+}
+
+function pickLogo(team: any): { default: string | null; throwback: string | null } {
+  const logos: any[] = team?.logos ?? [];
+  if (logos.length === 0) return { default: team?.logo ?? null, throwback: null };
+
+  const byRel = (needle: string) => logos.find((l) => (l.rel ?? []).some((r: string) => r.toLowerCase().includes(needle)));
+
+  // ESPN doesn't consistently label a "throwback" logo for every team. We
+  // look for anything tagged throwback/alternate/historic first; if that
+  // isn't present for a given team, throwback falls back to null and the
+  // UI should fall back to the default logo.
+  const throwback = byRel("throwback") ?? byRel("alternate") ?? byRel("historic") ?? null;
+  const primary = byRel("default") ?? logos[0];
+
+  return {
+    default: primary?.href ?? team?.logo ?? null,
+    throwback: throwback?.href ?? null,
+  };
+}
+
+function recordSummary(competitor: any): string | null {
+  const records: any[] = competitor?.records ?? [];
+  const total = records.find((r) => r.type === "total") ?? records[0];
+  return total?.summary ?? null;
+}
+
+function normalizeEvent(event: any): NormalizedGame {
+  const competition = event.competitions[0];
+  const competitors = competition.competitors;
+  const home = competitors.find((c: any) => c.homeAway === "home");
+  const away = competitors.find((c: any) => c.homeAway === "away");
+  const state: string = competition.status.type.state; // "pre" | "in" | "post"
+  const status = mapStatus(state);
+
+  let winner: NormalizedGame["winner"] = null;
+  if (status === "final") {
+    if (home.winner) winner = "home";
+    else if (away.winner) winner = "away";
+    else winner = "tie";
+  }
+
+  const homeLogos = pickLogo(home.team);
+  const awayLogos = pickLogo(away.team);
+  const notes: string[] = (competition.notes ?? []).map((n: any) => n.headline).filter(Boolean);
+
+  return {
+    espnEventId: event.id,
+    homeTeam: home.team.displayName,
+    awayTeam: away.team.displayName,
+    homeTeamAbbr: home.team.abbreviation,
+    awayTeamAbbr: away.team.abbreviation,
+    startTime: event.date,
+    status,
+    homeScore: home.score != null ? Number(home.score) : null,
+    awayScore: away.score != null ? Number(away.score) : null,
+    winner,
+    homeLogo: homeLogos.default,
+    awayLogo: awayLogos.default,
+    homeLogoThrowback: homeLogos.throwback,
+    awayLogoThrowback: awayLogos.throwback,
+    homeRecord: recordSummary(home),
+    awayRecord: recordSummary(away),
+    notes,
+  };
+}
 
 /**
- * TEMPORARY DIAGNOSTIC ROUTE — read-only, no DB writes, no auth beyond
- * "must be logged in" (doesn't need league membership since it isn't
- * looking at any league's data).
+ * Fetch a scoreboard slate.
  *
- * GET /api/debug-espn?sport=CFB&dates=20260917-20260921
+ * NFL: `seasontype` 2 = regular season (weeks 1-18), 3 = postseason
+ * (week 1 = wild card ... week 5 = Super Bowl).
  *
- * Hits ESPN's scoreboard endpoint with whatever `dates` value you give it
- * and reports back the raw HTTP status and response so we can figure out
- * exactly which date formats ESPN currently accepts. Safe to delete once
- * the refresh-scores bug is tracked down.
+ * CFB: `seasontype` 1 = week 0 / preseason slate, 2 = regular season
+ * (weeks 1-15ish), 3 = postseason (conference championships + bowls,
+ * typically returned across a small range of weeks — pass week=1 for a
+ * combined postseason slate, ESPN groups most bowls under one week).
  */
-export async function GET(req: Request) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+export async function fetchScoreboard(
+  sport: "NFL" | "CFB",
+  opts: { week: number; year: number; seasontype?: number }
+): Promise<NormalizedGame[]> {
+  const path = SPORT_PATHS[sport];
+  const seasontype = opts.seasontype ?? 2;
+  const url = `https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard?week=${opts.week}&year=${opts.year}&seasontype=${seasontype}&limit=400`;
 
-  const { searchParams } = new URL(req.url);
+  const res = await fetch(url, { next: { revalidate: 0 } });
+  if (!res.ok) {
+    throw new Error(`ESPN scoreboard fetch failed (${res.status}): ${url}`);
+  }
+  const data = await res.json();
 
-  // Rankings mode: GET /api/debug-espn?rankings=1&week=10&year=2026
-  // Lists every poll ESPN returns for that week (name + how many teams),
-  // so we can confirm the College Football Playoff poll is there and what
-  // it's called.
-  if (searchParams.get("rankings")) {
-    const week = searchParams.get("week") ?? "10";
-    const year = searchParams.get("year") ?? "2026";
-    const seasontype = searchParams.get("seasontype") ?? "2";
-    const rUrl = `https://site.api.espn.com/apis/site/v2/sports/football/college-football/rankings?week=${week}&year=${year}&seasontype=${seasontype}`;
-    try {
-      const res = await fetch(rUrl, { next: { revalidate: 0 } });
-      const data: any = await res.json().catch(() => null);
-      const polls: any[] = data?.rankings ?? [];
-      return NextResponse.json({
-        urlTried: rUrl,
-        httpStatus: res.status,
-        polls: polls.map((p) => ({
-          name: p.name,
-          shortName: p.shortName,
-          type: p.type,
-          teamsRanked: Array.isArray(p.ranks) ? p.ranks.length : 0,
-          top5: (p.ranks ?? []).slice(0, 5).map((r: any) => `${r.current}. ${r.team?.abbreviation}`),
-        })),
-      });
-    } catch (err: any) {
-      return NextResponse.json({ urlTried: rUrl, error: err?.message ?? String(err) });
+  const events = data.events ?? [];
+
+  // ESPN's week/year/seasontype scoreboard params occasionally fall back
+  // to the most recent *completed* season instead of erroring when the
+  // requested season's week-grouping isn't fully populated on their end
+  // yet (this can happen well before a season starts, even once the
+  // schedule itself is public). Rather than silently importing the wrong
+  // season's games, bail loudly so it's obvious what happened.
+  if (events.length > 0) {
+    const returnedYears = new Set(events.map((e: any) => new Date(e.date).getFullYear()));
+    const expectedYears = new Set([opts.year, opts.year + 1]); // a season spans two calendar years
+    const allMismatched = [...returnedYears].every((y) => !expectedYears.has(y as number));
+    if (allMismatched) {
+      throw new Error(
+        `ESPN returned games from ${[...returnedYears].join("/")} instead of the requested ${opts.year} season — ` +
+          `it likely hasn't activated week-based indexing for that season yet. Try "Sync by date range" instead.`
+      );
+    }
+
+    // A single week's games should span roughly a week, not a month+.
+    // ESPN's week param has been observed (for CFB especially) to
+    // sometimes ignore the requested week and return a much broader
+    // slice of the season instead. Catch that here rather than silently
+    // saving every one of those games under one Week record.
+    const eventDates = events.map((e: any) => new Date(e.date).getTime());
+    const spreadDays = (Math.max(...eventDates) - Math.min(...eventDates)) / (1000 * 60 * 60 * 24);
+    if (spreadDays > 9) {
+      throw new Error(
+        `ESPN returned games spanning ${Math.round(spreadDays)} days for week ${opts.week} — far more than a single week. ` +
+          `This is a known ESPN reliability issue for ${sport === "CFB" ? "CFB" : "this"} week lookups; use "Sync by date range" instead.`
+      );
     }
   }
 
-  const sport = (searchParams.get("sport") ?? "CFB").toUpperCase();
-  const dates = searchParams.get("dates") ?? "20260918";
-  const path = sport === "NFL" ? "football/nfl" : "football/college-football";
-  const url = `https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard?dates=${dates}&limit=400`;
-
-  try {
-    const res = await fetch(url, { next: { revalidate: 0 } });
-    const text = await res.text();
-    let parsed: any = null;
-    let eventCount: number | null = null;
-    try {
-      parsed = JSON.parse(text);
-      eventCount = Array.isArray(parsed?.events) ? parsed.events.length : null;
-    } catch {
-      // leave parsed null if it's not JSON (e.g. an HTML error page)
-    }
-    return NextResponse.json({
-      urlTried: url,
-      httpStatus: res.status,
-      httpOk: res.ok,
-      eventCount,
-      bodySnippet: text.slice(0, 500),
-    });
-  } catch (err: any) {
-    return NextResponse.json({ urlTried: url, error: err?.message ?? String(err) });
-  }
+  return events.map(normalizeEvent);
 }
+
+/** Fetch one exact calendar date (YYYYMMDD) from ESPN's scoreboard. Throws on a non-2xx response. */
+async function fetchEventsForSingleDate(path: string, dateYYYYMMDD: string): Promise<any[]> {
+  const url = `https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard?dates=${dateYYYYMMDD}&limit=400`;
+  const res = await fetch(url, { next: { revalidate: 0 } });
+  if (!res.ok) throw new Error(`ESPN scoreboard fetch failed (${res.status}): ${url}`);
+  const data = await res.json();
+  return data.events ?? [];
+}
+
+/** Enumerate every calendar date (as YYYYMMDD strings) from start to end, inclusive. */
+function enumerateDates(startStr: string, endStr: string): string[] {
+  const toUtcMidnight = (s: string) => Date.UTC(Number(s.slice(0, 4)), Number(s.slice(4, 6)) - 1, Number(s.slice(6, 8)));
+  const startMs = toUtcMidnight(startStr);
+  const endMs = toUtcMidnight(endStr);
+  const DAY = 24 * 60 * 60 * 1000;
+  const out: string[] = [];
+  for (let t = startMs; t <= endMs; t += DAY) {
+    const d = new Date(t);
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(d.getUTCDate()).padStart(2, "0");
+    out.push(`${y}${m}${day}`);
+  }
+  return out;
+}
+
+/**
+ * Same as fetchScoreboard, but pinned to a specific calendar date (or date
+ * range, e.g. "20260903-20260909") instead of an ESPN week number. This is
+ * the reliable fallback when week/year/seasontype lookups silently return
+ * the wrong season (see the check in fetchScoreboard) — ESPN's date-based
+ * lookup doesn't depend on that internal week-indexing being ready.
+ *
+ * ESPN's scoreboard endpoint has stopped accepting a multi-day `dates=`
+ * range outright (confirmed: it now returns an HTTP 400 "Failed to get
+ * events endpoint" for anything like "20260917-20260918", even a 2-day
+ * span — only a single exact date still works). So a "range" here is
+ * fetched as one request per calendar day and merged, rather than as one
+ * request with a range parameter. Results are still filtered client-side
+ * against the requested range as a hard cutoff, so this function's output
+ * always matches what you asked for.
+ */
+export async function fetchScoreboardByDate(sport: "NFL" | "CFB", dateYYYYMMDD: string): Promise<NormalizedGame[]> {
+  const path = SPORT_PATHS[sport];
+  const [startStr, endStr] = dateYYYYMMDD.split("-");
+  const datesToFetch = !endStr || endStr === startStr ? [startStr] : enumerateDates(startStr, endStr);
+
+  const seenIds = new Set<string>();
+  const rawEvents: any[] = [];
+  let lastError: unknown = null;
+  for (const d of datesToFetch) {
+    try {
+      const events = await fetchEventsForSingleDate(path, d);
+      for (const e of events) {
+        if (!seenIds.has(e.id)) {
+          seenIds.add(e.id);
+          rawEvents.push(e);
+        }
+      }
+    } catch (err) {
+      // One bad day inside a multi-day range shouldn't sink the whole
+      // fetch — remember the error in case every single day fails (in
+      // which case we do want to surface it), but keep going.
+      lastError = err;
+    }
+  }
+  if (rawEvents.length === 0 && datesToFetch.length > 0 && lastError) {
+    throw lastError;
+  }
+
+  const { start, end } = parseDateRangeBounds(dateYYYYMMDD);
+  const games = rawEvents.map(normalizeEvent);
+
+  return games.filter((g: NormalizedGame) => {
+    const t = new Date(g.startTime).getTime();
+    return t >= start.getTime() && t <= end.getTime();
+  });
+}
+
+/**
+ * Parses "YYYYMMDD" or "YYYYMMDD-YYYYMMDD" into inclusive UTC day
+ * boundaries, with a buffer on each side: ESPN's `startTime` is UTC, but
+ * the calendar date a fan means is US-local — an 8pm PT kickoff on the
+ * "end" date lands after midnight UTC the *next* day. The buffer keeps
+ * that game in range without meaningfully weakening the cutoff for games
+ * that are genuinely outside the requested window.
+ */
+export function parseDateRangeBounds(dateYYYYMMDD: string): { start: Date; end: Date } {
+  const [startStr, endStr] = dateYYYYMMDD.split("-");
+  const toDate = (s: string) => {
+    const year = Number(s.slice(0, 4));
+    const month = Number(s.slice(4, 6)) - 1;
+    const day = Number(s.slice(6, 8));
+    return { year, month, day };
+  };
+  const startParts = toDate(startStr);
+  const endParts = toDate(endStr ?? startStr);
+  const HOUR = 60 * 60 * 1000;
+  return {
+    start: new Date(Date.UTC(startParts.year, startParts.month, startParts.day, 0, 0, 0, 0) - 10 * HOUR),
+    end: new Date(Date.UTC(endParts.year, endParts.month, endParts.day, 23, 59, 59, 999) + 14 * HOUR),
+  };
+}
+
+export type RankingEntry = { teamAbbr: string; rank: number };
+
+/**
+ * Fetch the rankings used to tag ranked games for a given CFB week, as a
+ * lookup of team abbreviation -> rank.
+ *
+ * Prefers the College Football Playoff committee rankings whenever ESPN has
+ * published them for that week (the committee's first poll comes out in
+ * early November), and falls back to the AP Top 25 for every week before
+ * that. The choice is made per week, so earlier-season weeks keep their AP
+ * ranks and later weeks use the CFP ranks automatically.
+ */
+export async function fetchRankings(opts: { week: number; year: number; seasontype?: number }): Promise<Map<string, number>> {
+  const seasontype = opts.seasontype ?? 2;
+  const url = `https://site.api.espn.com/apis/site/v2/sports/football/college-football/rankings?week=${opts.week}&year=${opts.year}&seasontype=${seasontype}`;
+
+  const res = await fetch(url, { next: { revalidate: 0 } });
+  if (!res.ok) throw new Error(`ESPN rankings fetch failed (${res.status}): ${url}`);
+  const data = await res.json();
+
+  const polls: any[] = data.rankings ?? [];
+  const label = (p: any) => `${p.name ?? ""} ${p.shortName ?? ""} ${p.type ?? ""}`;
+  const hasRanks = (p: any) => Array.isArray(p?.ranks) && p.ranks.length > 0;
+
+  const cfp = polls.find((p) => /college football playoff|\bcfp\b/i.test(label(p)) && hasRanks(p));
+  const ap = polls.find((p) => /ap top 25|associated press/i.test(label(p)));
+  const chosen = cfp ?? ap ?? polls[0];
+  if (!chosen) return new Map();
+
+  const map = new Map<string, number>();
+  for (const entry of chosen.ranks ?? []) {
+    const abbr = entry.team?.abbreviation;
+    if (abbr) map.set(abbr, entry.current);
+  }
+  return map;
+}
+
+/** Kept for backwards compatibility — now just forwards to fetchRankings (CFP when available, else AP). */
+export const fetchApPoll = fetchRankings;
+
+/** Best-effort guess at the current NFL/CFB week number for a given date. */
+/** Week 0's anchor date for a given season — single source of truth, used both to fetch Week 0 and to exclude its games from every other CFB sync. */
+export function cfbWeek0DateBounds(season: number): { start: Date; end: Date } {
+  return parseDateRangeBounds(`${season}0829`);
+}
+
+export function currentSeasonYear(date = new Date()): number {
+  // NFL/CFB seasons span Aug (year Y) - Feb (year Y+1); label by the year the
+  // season started.
+  const month = date.getMonth(); // 0-11
+  return month < 2 ? date.getFullYear() - 1 : date.getFullYear();
+}
+
+/** Week ranges to loop over for a "sync everything" pass. */
+export const SEASON_STRUCTURE = {
+  NFL: {
+    // regular season weeks 1-18, postseason weeks 1-5 (wildcard..Super Bowl)
+    regularWeeks: Array.from({ length: 18 }, (_, i) => i + 1),
+    postseasonWeeks: [1, 2, 3, 4, 5],
+  },
+  CFB: {
+    // Week 0 is synced separately by calendar date (see syncCfbWeek0), and
+    // postseason (conference championships, bowls, CFB playoff rounds) is
+    // synced separately too (see syncCfbPostseason), since it needs to
+    // scan and categorize games rather than trust ESPN's week numbering.
+    regularWeeks: Array.from({ length: 15 }, (_, i) => i + 1),
+  },
+};
