@@ -20,6 +20,36 @@ export async function GET(req: Request) {
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { searchParams } = new URL(req.url);
+
+  // Rankings mode: GET /api/debug-espn?rankings=1&week=10&year=2026
+  // Lists every poll ESPN returns for that week (name + how many teams),
+  // so we can confirm the College Football Playoff poll is there and what
+  // it's called.
+  if (searchParams.get("rankings")) {
+    const week = searchParams.get("week") ?? "10";
+    const year = searchParams.get("year") ?? "2026";
+    const seasontype = searchParams.get("seasontype") ?? "2";
+    const rUrl = `https://site.api.espn.com/apis/site/v2/sports/football/college-football/rankings?week=${week}&year=${year}&seasontype=${seasontype}`;
+    try {
+      const res = await fetch(rUrl, { next: { revalidate: 0 } });
+      const data: any = await res.json().catch(() => null);
+      const polls: any[] = data?.rankings ?? [];
+      return NextResponse.json({
+        urlTried: rUrl,
+        httpStatus: res.status,
+        polls: polls.map((p) => ({
+          name: p.name,
+          shortName: p.shortName,
+          type: p.type,
+          teamsRanked: Array.isArray(p.ranks) ? p.ranks.length : 0,
+          top5: (p.ranks ?? []).slice(0, 5).map((r: any) => `${r.current}. ${r.team?.abbreviation}`),
+        })),
+      });
+    } catch (err: any) {
+      return NextResponse.json({ urlTried: rUrl, error: err?.message ?? String(err) });
+    }
+  }
+
   const sport = (searchParams.get("sport") ?? "CFB").toUpperCase();
   const dates = searchParams.get("dates") ?? "20260918";
   const path = sport === "NFL" ? "football/nfl" : "football/college-football";
