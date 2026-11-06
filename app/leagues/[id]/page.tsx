@@ -84,6 +84,7 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
   const router = useRouter();
   const [league, setLeague] = useState<LeagueInfo | null>(null);
   const [members, setMembers] = useState<{ userId: string; username: string; role: string }[]>([]);
+  const [tempPassword, setTempPassword] = useState<{ username: string; password: string } | null>(null);
   const [sport, setSport] = useState("NFL");
   const [season, setSeason] = useState(currentSeasonYear());
   const [weekNumber, setWeekNumber] = useState(1);
@@ -338,6 +339,22 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
     } else {
       const data = await res.json();
       setMessage(data.error);
+    }
+  }
+
+  async function handleResetPassword(userId: string, username: string) {
+    if (!confirm(`Reset ${username}'s password? Their old password will stop working right away, and you'll get a temporary one to send them.`)) return;
+    setTempPassword(null);
+    try {
+      const res = await fetch(`/api/leagues/${params.id}/members/${userId}/reset-password`, { method: "POST" });
+      const data = await safeJson(res);
+      if (res.ok && data?.tempPassword) {
+        setTempPassword({ username, password: data.tempPassword });
+      } else {
+        setMessage(data?.error ?? "Couldn't reset that password.");
+      }
+    } catch {
+      setMessage("Network error — couldn't reset that password.");
     }
   }
 
@@ -768,6 +785,15 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
               <span key={m.userId} className="flex items-center gap-2 bg-black/20 border border-white/15 rounded-full pl-3 pr-1.5 py-1 text-sm">
                 {m.username}
                 {m.role === "owner" && <span className="text-pigskin text-xs">owner</span>}
+                {league?.role === "owner" && !isSelf && m.role !== "owner" && (
+                  <button
+                    onClick={() => handleResetPassword(m.userId, m.username)}
+                    className="h-5 px-1.5 rounded-full hover:bg-pigskin/20 text-white/50 hover:text-pigskin transition-colors text-xs"
+                    title="Reset this member's password"
+                  >
+                    Reset pw
+                  </button>
+                )}
                 {canRemove && (
                   <button
                     onClick={() => handleRemoveMember(m.userId, isSelf)}
@@ -781,6 +807,20 @@ export default function LeagueDetailPage({ params }: { params: { id: string } })
             );
           })}
         </div>
+        {tempPassword && (
+          <div className="card p-4 mt-3 border border-pigskin/50">
+            <p className="text-sm">
+              Temporary password for <span className="font-semibold">{tempPassword.username}</span>:
+            </p>
+            <p className="font-mono text-lg my-2 select-all">{tempPassword.password}</p>
+            <p className="text-xs text-white/50">
+              Send it to them privately. It&rsquo;s shown only once &mdash; once you close this, it can&rsquo;t be looked up again (you&rsquo;d just reset it again).
+            </p>
+            <button onClick={() => setTempPassword(null)} className="text-xs text-white/60 hover:text-white mt-2 underline">
+              Done, hide it
+            </button>
+          </div>
+        )}
       </div>
 
       <div>
